@@ -54,11 +54,37 @@ class StorageService {
   static async saveTags(tags) { return this.set('tags', tags); }
   static async getSortOrder() { return this.get('sortOrder', 'desc'); }
   static async saveSortOrder(v) { return this.set('sortOrder', v); }
+  static async getSortField() { return this.get('sortField', 'addedTime'); }
+  static async saveSortField(v) { return this.set('sortField', v); }
   static async getTrash() { return this.get('trash', []); }
   static async saveTrash(trash) { return this.set('trash', trash); }
   /** 目录同步映射：{ tagName: dirPath } */
   static async getSyncDirMappings() { return this.get('syncDirMappings', {}); }
   static async saveSyncDirMappings(mappings) { return this.set('syncDirMappings', mappings); }
+}
+
+// ==========================================
+// 自然排序比较函数（数字按数值排序）
+// ==========================================
+function naturalCompare(a, b) {
+  const re = /(\d+)|(\D+)/g;
+  const aParts = a.match(re) || [];
+  const bParts = b.match(re) || [];
+  const len = Math.min(aParts.length, bParts.length);
+  for (let i = 0; i < len; i++) {
+    const aIsNum = /^\d+$/.test(aParts[i]);
+    const bIsNum = /^\d+$/.test(bParts[i]);
+    if (aIsNum && bIsNum) {
+      const diff = parseInt(aParts[i], 10) - parseInt(bParts[i], 10);
+      if (diff !== 0) return diff;
+      // 数值相同时按字符串长度排（前导零少的靠前）
+      if (aParts[i].length !== bParts[i].length) return aParts[i].length - bParts[i].length;
+    } else {
+      const cmp = aParts[i].localeCompare(bParts[i]);
+      if (cmp !== 0) return cmp;
+    }
+  }
+  return aParts.length - bParts.length;
 }
 
 // ==========================================
@@ -209,6 +235,10 @@ class TagManager {
         this._childrenCache.set(parent, []);
       }
       this._childrenCache.get(parent).push(tag);
+    }
+    // 对每个层级的子标签按自然排序
+    for (const [, children] of this._childrenCache) {
+      children.sort((a, b) => naturalCompare(this.getDisplayName(a.name), this.getDisplayName(b.name)));
     }
   }
 
@@ -476,7 +506,7 @@ class FileManager {
     return file;
   }
 
-  getFilteredFiles(activeTags, filterNoTag, searchQuery, sortOrder, tagDisplayMode, searchTags) {
+  getFilteredFiles(activeTags, filterNoTag, searchQuery, sortOrder, tagDisplayMode, searchTags, sortField, fileInfoCache) {
     let filtered = [...this.files];
 
     if (filterNoTag) {
@@ -524,7 +554,38 @@ class FileManager {
     }
 
     filtered.sort((a, b) => {
-      const diff = a.addedTime - b.addedTime;
+      const field = sortField || 'addedTime';
+      const cache = fileInfoCache || {};
+      let diff = 0;
+
+      if (field === 'addedTime') {
+        diff = (a.addedTime || 0) - (b.addedTime || 0);
+      } else if (field === 'name') {
+        diff = naturalCompare(a.name.toLowerCase(), b.name.toLowerCase());
+      } else if (field === 'size') {
+        const aInfo = cache[a.path] || {};
+        const bInfo = cache[b.path] || {};
+        diff = (aInfo.size || 0) - (bInfo.size || 0);
+      } else if (field === 'createdTime') {
+        const aInfo = cache[a.path] || {};
+        const bInfo = cache[b.path] || {};
+        const aTime = aInfo.createdTime ? new Date(aInfo.createdTime).getTime() : 0;
+        const bTime = bInfo.createdTime ? new Date(bInfo.createdTime).getTime() : 0;
+        diff = aTime - bTime;
+      } else if (field === 'modifiedTime') {
+        const aInfo = cache[a.path] || {};
+        const bInfo = cache[b.path] || {};
+        const aTime = aInfo.modifiedTime ? new Date(aInfo.modifiedTime).getTime() : 0;
+        const bTime = bInfo.modifiedTime ? new Date(bInfo.modifiedTime).getTime() : 0;
+        diff = aTime - bTime;
+      } else if (field === 'fileType') {
+        const aInfo = cache[a.path] || {};
+        const bInfo = cache[b.path] || {};
+        const aType = (aInfo.fileType || '').toLowerCase();
+        const bType = (bInfo.fileType || '').toLowerCase();
+        diff = aType.localeCompare(bType);
+      }
+
       return sortOrder === 'asc' ? diff : -diff;
     });
 
@@ -649,6 +710,7 @@ class UIController {
     this.tagManager = new TagManager();
     this.fileManager = new FileManager(this.tagManager);
     this.sortOrder = 'desc';
+    this.sortField = 'addedTime'; // addedTime, name, size, createdTime, modifiedTime, fileType
     this.activeTags = new Set(); // 多选标签筛选, 空 = 全部
     this.filterNoTag = false;   // 筛选无标签文件
     this.searchQuery = '';
@@ -709,6 +771,7 @@ class UIController {
     await this.tagManager.load();
     await this.fileManager.load();
     this.sortOrder = await StorageService.getSortOrder();
+    this.sortField = await StorageService.getSortField();
     this.syncDirMappings = await StorageService.getSyncDirMappings();
     this.bindEvents();
     this.render();
@@ -957,10 +1020,21 @@ class UIController {
       document.querySelectorAll('.copy-dropdown, .batch-copy-dropdown, .open-with-dropdown, .batch-open-with-dropdown, .terminal-dropdown, .batch-terminal-dropdown').forEach((d) => d.style.display = 'none');
       document.querySelectorAll('.open-with-search-results').forEach((d) => { d.innerHTML = ''; d.style.display = 'none'; });
       document.querySelectorAll('.terminal-search-results').forEach((d) => { d.innerHTML = ''; d.style.display = 'none'; });
+      document.getElementById('sort-dropdown').style.display = 'none';
     });
 
     // 排序
-    document.getElementById('btn-sort').addEventListener('click', () => this.toggleSort());
+    document.getElementById('btn-sort').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleSort();
+    });
+    document.getElementById('sort-dropdown').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const item = e.target.closest('.sort-dropdown-item');
+      if (item) {
+        this.setSortOption(item.getAttribute('data-field'), item.getAttribute('data-dir'));
+      }
+    });
 
     // 新建根标签
     document.getElementById('btn-add-root-tag').addEventListener('click', () => {
@@ -1794,7 +1868,7 @@ class UIController {
     const tagNames = new Set(allTags.map((t) => t.name));
     tagNames.add(dateTag);
 
-    const sortedNames = Array.from(tagNames).sort((a, b) => a.localeCompare(b));
+    const sortedNames = Array.from(tagNames).sort((a, b) => naturalCompare(a, b));
 
     if (sortedNames.length === 0) {
       container.innerHTML = '<p class="no-tags-hint">还没有标签，请先新建</p>';
@@ -1848,7 +1922,7 @@ class UIController {
    * 渲染标签树节点
    */
   renderTagTreeNodes(tree, parentPath, expandedPaths) {
-    const keys = Object.keys(tree).sort((a, b) => a.localeCompare(b));
+    const keys = Object.keys(tree).sort((a, b) => naturalCompare(a, b));
     if (keys.length === 0) return '';
 
     return keys.map((key) => {
@@ -3228,8 +3302,26 @@ class UIController {
   // ==========================================
 
   async toggleSort() {
-    this.sortOrder = this.sortOrder === 'desc' ? 'asc' : 'desc';
-    await StorageService.saveSortOrder(this.sortOrder);
+    const dropdown = document.getElementById('sort-dropdown');
+    if (dropdown.style.display !== 'none') {
+      dropdown.style.display = 'none';
+      return;
+    }
+    // 更新选中状态
+    dropdown.querySelectorAll('.sort-dropdown-item').forEach((item) => {
+      const field = item.getAttribute('data-field');
+      const dir = item.getAttribute('data-dir');
+      item.classList.toggle('active', field === this.sortField && dir === this.sortOrder);
+    });
+    dropdown.style.display = 'block';
+  }
+
+  async setSortOption(field, dir) {
+    this.sortField = field;
+    this.sortOrder = dir;
+    await StorageService.saveSortField(field);
+    await StorageService.saveSortOrder(dir);
+    document.getElementById('sort-dropdown').style.display = 'none';
     this.updateSortButton();
     this.currentPage = 1;
     this.renderFileList();
@@ -3237,7 +3329,16 @@ class UIController {
 
   updateSortButton() {
     const label = document.querySelector('.sort-label');
-    label.textContent = this.sortOrder === 'desc' ? '最新优先' : '最早优先';
+    const fieldLabels = {
+      addedTime: '添加时间',
+      name: '文件名',
+      size: '文件大小',
+      createdTime: '创建时间',
+      modifiedTime: '修改时间',
+      fileType: '文件类型',
+    };
+    const dirSymbol = this.sortOrder === 'desc' ? '↓' : '↑';
+    label.textContent = `${fieldLabels[this.sortField] || '添加时间'} ${dirSymbol}`;
   }
 
   // ==========================================
@@ -3367,7 +3468,7 @@ class UIController {
     ];
 
     // 按层级排序
-    const sorted = [...allTags].sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = [...allTags].sort((a, b) => naturalCompare(a.name, b.name));
 
     // 过滤
     const filtered = filterText
@@ -3769,7 +3870,7 @@ class UIController {
 
   renderFileList() {
     const container = document.getElementById('file-list');
-    const allFilteredFiles = this.fileManager.getFilteredFiles(this.activeTags, this.filterNoTag, this.searchQuery, this.sortOrder, this.tagDisplayMode, this.searchTags);
+    const allFilteredFiles = this.fileManager.getFilteredFiles(this.activeTags, this.filterNoTag, this.searchQuery, this.sortOrder, this.tagDisplayMode, this.searchTags, this.sortField, this.fileInfoCache);
     const currentIds = new Set(allFilteredFiles.map((f) => f.id));
     for (const id of this.selectedFiles) {
       if (!currentIds.has(id)) this.selectedFiles.delete(id);
@@ -4671,7 +4772,7 @@ class UIController {
   }
 
   selectAllFiles() {
-    const allFilteredFiles = this.fileManager.getFilteredFiles(this.activeTags, this.filterNoTag, this.searchQuery, this.sortOrder, this.tagDisplayMode, this.searchTags);
+    const allFilteredFiles = this.fileManager.getFilteredFiles(this.activeTags, this.filterNoTag, this.searchQuery, this.sortOrder, this.tagDisplayMode, this.searchTags, this.sortField, this.fileInfoCache);
     // 只选当前页的文件
     const startIdx = (this.currentPage - 1) * this.pageSize;
     const endIdx = Math.min(startIdx + this.pageSize, allFilteredFiles.length);
@@ -4780,7 +4881,7 @@ class UIController {
    * @param {Set} preSelectedTags - 需要默认选中的标签（所选文件已有的标签）
    */
   renderBatchTagTreeNodes(tree, parentPath, expandedPaths, isRemoveMode, preSelectedTags = new Set()) {
-    const keys = Object.keys(tree).sort((a, b) => a.localeCompare(b));
+    const keys = Object.keys(tree).sort((a, b) => naturalCompare(a, b));
     if (keys.length === 0) return '';
 
     return keys.map((key) => {
@@ -5614,7 +5715,7 @@ class UIController {
     // 只显示回收站中存在的标签
     const sorted = [...allTags]
       .filter((t) => tagCounts.has(t.name))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => naturalCompare(a.name, b.name));
 
     const filtered = filterText
       ? sorted.filter((t) => t.name.toLowerCase().includes(filterText))

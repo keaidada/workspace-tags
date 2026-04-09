@@ -704,6 +704,51 @@ html, body {
   font-size: 13px;
 }
 
+.sort-dropdown-wrapper {
+  position: relative;
+}
+
+.sort-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  z-index: 100;
+  min-width: 200px;
+  padding: 4px 0;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.sort-dropdown-item {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.sort-dropdown-item:hover {
+  background: var(--bg-hover);
+}
+
+.sort-dropdown-item.active {
+  color: var(--primary);
+  font-weight: 600;
+  background: rgba(59,130,246,0.06);
+}
+
+.sort-dropdown-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 8px;
+}
+
 /* ==========================================
    Context Menu (右键菜单)
    ========================================== */
