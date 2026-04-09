@@ -137,25 +137,53 @@ def open_file(file_path):
 
 
 def is_app_running(app_name):
-    """检查指定应用是否正在运行（macOS）"""
+    """检查指定应用是否正在运行（跨平台）"""
     import subprocess
-    try:
-        result = subprocess.run(
-            ['pgrep', '-ix', app_name],
-            capture_output=True, text=True, timeout=3
-        )
-        return result.returncode == 0
-    except Exception:
-        pass
-    # pgrep 对带空格的应用名不太好用，用 osascript 兜底
-    try:
-        result = subprocess.run(
-            ['osascript', '-e', f'tell application "System Events" to (name of processes) contains "{app_name}"'],
-            capture_output=True, text=True, timeout=5
-        )
-        return 'true' in result.stdout.strip().lower()
-    except Exception:
-        return False
+    import platform
+
+    system = platform.system()
+
+    if system == 'Windows':
+        try:
+            # Windows: 使用 tasklist 查找进程
+            result = subprocess.run(
+                ['tasklist', '/FI', f'IMAGENAME eq {app_name}.exe', '/NH'],
+                capture_output=True, text=True, timeout=5,
+                creationflags=0x08000000  # CREATE_NO_WINDOW
+            )
+            return app_name.lower() in result.stdout.lower()
+        except Exception:
+            return False
+
+    elif system == 'Darwin':
+        try:
+            result = subprocess.run(
+                ['pgrep', '-ix', app_name],
+                capture_output=True, text=True, timeout=3
+            )
+            return result.returncode == 0
+        except Exception:
+            pass
+        # pgrep 对带空格的应用名不太好用，用 osascript 兜底
+        try:
+            result = subprocess.run(
+                ['osascript', '-e', f'tell application "System Events" to (name of processes) contains "{app_name}"'],
+                capture_output=True, text=True, timeout=5
+            )
+            return 'true' in result.stdout.strip().lower()
+        except Exception:
+            return False
+
+    else:
+        # Linux
+        try:
+            result = subprocess.run(
+                ['pgrep', '-ix', app_name],
+                capture_output=True, text=True, timeout=3
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
 
 
 def open_file_with(file_path, app):
@@ -232,7 +260,99 @@ def open_file_with(file_path, app):
                 subprocess.Popen(['open', '-a', app, file_path])
 
         elif system == 'Windows':
-            subprocess.Popen([app, file_path])
+            app_lower = app.lower()
+
+            # VS Code: 查找 code.cmd 并支持窗口复用
+            if 'visual studio code' in app_lower or app_lower == 'code':
+                code_paths = [
+                    os.path.expandvars(r'%LOCALAPPDATA%\Programs\Microsoft VS Code\bin\code.cmd'),
+                    os.path.expandvars(r'%ProgramFiles%\Microsoft VS Code\bin\code.cmd'),
+                    os.path.expandvars(r'%ProgramFiles(x86)%\Microsoft VS Code\bin\code.cmd'),
+                ]
+                code_path = None
+                for p in code_paths:
+                    if os.path.exists(p):
+                        code_path = p
+                        break
+                if code_path:
+                    running = is_app_running('Code')
+                    if running:
+                        subprocess.Popen([code_path, '-r', file_path], shell=True)
+                    else:
+                        subprocess.Popen([code_path, file_path], shell=True)
+                    return {"success": True, "path": file_path, "app": app, "reused_window": running}
+                else:
+                    # 尝试 code 命令（可能在 PATH 中）
+                    try:
+                        running = is_app_running('Code')
+                        args = ['code']
+                        if running:
+                            args.append('-r')
+                        args.append(file_path)
+                        subprocess.Popen(args, shell=True)
+                        return {"success": True, "path": file_path, "app": app}
+                    except Exception:
+                        pass
+
+            # Cursor: 类似 VS Code
+            elif 'cursor' in app_lower:
+                cursor_paths = [
+                    os.path.expandvars(r'%LOCALAPPDATA%\Programs\cursor\resources\app\bin\cursor.cmd'),
+                    os.path.expandvars(r'%LOCALAPPDATA%\cursor\cursor.exe'),
+                ]
+                cursor_path = None
+                for p in cursor_paths:
+                    if os.path.exists(p):
+                        cursor_path = p
+                        break
+                if cursor_path:
+                    running = is_app_running('Cursor')
+                    if running:
+                        subprocess.Popen([cursor_path, '-r', file_path], shell=True)
+                    else:
+                        subprocess.Popen([cursor_path, file_path], shell=True)
+                    return {"success": True, "path": file_path, "app": app, "reused_window": running}
+
+            # Sublime Text
+            elif 'sublime' in app_lower:
+                subl_paths = [
+                    os.path.expandvars(r'%ProgramFiles%\Sublime Text\subl.exe'),
+                    os.path.expandvars(r'%ProgramFiles%\Sublime Text 3\subl.exe'),
+                    os.path.expandvars(r'%ProgramFiles(x86)%\Sublime Text\subl.exe'),
+                ]
+                subl_path = None
+                for p in subl_paths:
+                    if os.path.exists(p):
+                        subl_path = p
+                        break
+                if subl_path:
+                    running = is_app_running('sublime_text')
+                    if running:
+                        subprocess.Popen([subl_path, file_path])
+                    else:
+                        subprocess.Popen([subl_path, '-n', file_path])
+                    return {"success": True, "path": file_path, "app": app, "reused_window": running}
+
+            # Notepad++
+            elif 'notepad++' in app_lower:
+                npp_paths = [
+                    os.path.expandvars(r'%ProgramFiles%\Notepad++\notepad++.exe'),
+                    os.path.expandvars(r'%ProgramFiles(x86)%\Notepad++\notepad++.exe'),
+                ]
+                npp_path = None
+                for p in npp_paths:
+                    if os.path.exists(p):
+                        npp_path = p
+                        break
+                if npp_path:
+                    subprocess.Popen([npp_path, file_path])
+                    return {"success": True, "path": file_path, "app": app}
+
+            # 通用回退: 尝试直接用应用名执行，或使用 os.startfile
+            try:
+                subprocess.Popen([app, file_path], shell=True)
+            except Exception:
+                os.startfile(file_path)
         else:
             subprocess.Popen([app, file_path])
         return {"success": True, "path": file_path, "app": app}
@@ -240,7 +360,7 @@ def open_file_with(file_path, app):
         return {"error": f"使用 {app} 打开文件失败: {str(e)}"}
 
 
-def open_terminal_at(dir_path, app='Terminal'):
+def open_terminal_at(dir_path, app=''):
     """在指定目录打开终端应用"""
     import subprocess
     import platform
@@ -254,6 +374,17 @@ def open_terminal_at(dir_path, app='Terminal'):
     # 如果传入的是文件路径，取其所在目录
     if os.path.isfile(dir_path):
         dir_path = os.path.dirname(dir_path)
+
+    system = platform.system()
+
+    # 未指定终端应用时，根据平台选择默认值
+    if not app:
+        if system == 'Darwin':
+            app = 'Terminal'
+        elif system == 'Windows':
+            app = 'cmd'
+        else:
+            app = 'x-terminal-emulator'
 
     try:
         system = platform.system()
@@ -540,17 +671,44 @@ with open("{result_file}", "w") as f:
             return {"error": "无法弹出目录选择对话框，请使用手动输入路径方式"}
 
         elif system == 'Windows':
-            # Windows: 使用 tkinter
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes('-topmost', True)
-            chosen_path = filedialog.askdirectory(title="选择目录")
-            root.destroy()
-            if not chosen_path:
-                return {"cancelled": True}
-            return {"path": chosen_path}
+            # Windows: 使用独立子进程运行 tkinter（Native Host 是无 GUI 子进程）
+            try:
+                picker_script = '''import tkinter as tk
+from tkinter import filedialog
+root = tk.Tk()
+root.withdraw()
+root.attributes('-topmost', True)
+root.update()
+path = filedialog.askdirectory(title="选择要导入的目录")
+root.destroy()
+if path:
+    print(path)
+else:
+    print("__CANCELLED__")
+'''
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
+                    f.write(picker_script)
+                    tmp_script = f.name
+
+                result = subprocess.run(
+                    [sys.executable, tmp_script],
+                    capture_output=True, text=True, timeout=120
+                )
+                os.unlink(tmp_script)
+
+                if result.returncode == 0:
+                    chosen_path = result.stdout.strip()
+                    if not chosen_path or chosen_path == '__CANCELLED__':
+                        return {"cancelled": True}
+                    # tkinter 返回的路径是 / 分隔的，转换为原生 Windows 路径
+                    chosen_path = chosen_path.replace('/', '\\')
+                    if chosen_path.endswith('\\') and len(chosen_path) > 3:
+                        chosen_path = chosen_path.rstrip('\\')
+                    return {"path": chosen_path}
+                else:
+                    return {"error": f"目录选择失败: {result.stderr.strip()}"}
+            except Exception as e:
+                return {"error": f"选择目录失败: {str(e)}"}
 
         else:
             # Linux: 使用 zenity
@@ -687,25 +845,101 @@ def rename_file(old_path, new_name):
 
 
 def list_installed_apps():
-    """获取 macOS 上已安装的应用列表"""
-    import subprocess
+    """获取已安装的应用列表（跨平台）"""
+    import platform
+
+    system = platform.system()
     apps = []
-    # 搜索常见应用目录
-    app_dirs = ['/Applications', '/System/Applications', os.path.expanduser('~/Applications')]
-    for app_dir in app_dirs:
-        if not os.path.exists(app_dir):
-            continue
-        try:
-            for root, dirs, files in os.walk(app_dir):
-                for d in dirs:
-                    if d.endswith('.app'):
-                        app_name = d[:-4]  # 去掉 .app 后缀
-                        app_path = os.path.join(root, d)
+
+    if system == 'Darwin':
+        # macOS: 扫描 .app 目录
+        app_dirs = ['/Applications', '/System/Applications', os.path.expanduser('~/Applications')]
+        for app_dir in app_dirs:
+            if not os.path.exists(app_dir):
+                continue
+            try:
+                for root, dirs, files in os.walk(app_dir):
+                    for d in dirs:
+                        if d.endswith('.app'):
+                            app_name = d[:-4]  # 去掉 .app 后缀
+                            app_path = os.path.join(root, d)
+                            apps.append({'name': app_name, 'path': app_path})
+                    # 不递归进入 .app 包内部
+                    dirs[:] = [d for d in dirs if not d.endswith('.app')]
+            except Exception:
+                pass
+
+    elif system == 'Windows':
+        # Windows: 扫描 Start Menu 快捷方式和 Program Files
+        import glob
+
+        # 从开始菜单获取应用
+        start_menu_dirs = [
+            os.path.expandvars(r'%ProgramData%\Microsoft\Windows\Start Menu\Programs'),
+            os.path.expandvars(r'%APPDATA%\Microsoft\Windows\Start Menu\Programs'),
+        ]
+        for menu_dir in start_menu_dirs:
+            if not os.path.exists(menu_dir):
+                continue
+            try:
+                for lnk_file in glob.glob(os.path.join(menu_dir, '**', '*.lnk'), recursive=True):
+                    app_name = os.path.splitext(os.path.basename(lnk_file))[0]
+                    # 过滤掉卸载程序等
+                    if any(kw in app_name.lower() for kw in ['uninstall', '卸载', 'readme', 'help', 'license']):
+                        continue
+                    apps.append({'name': app_name, 'path': lnk_file})
+            except Exception:
+                pass
+
+        # 扫描 Program Files 中的 .exe 文件（仅顶层）
+        program_dirs = [
+            os.path.expandvars(r'%ProgramFiles%'),
+            os.path.expandvars(r'%ProgramFiles(x86)%'),
+            os.path.expandvars(r'%LOCALAPPDATA%\Programs'),
+        ]
+        for prog_dir in program_dirs:
+            if not os.path.exists(prog_dir):
+                continue
+            try:
+                for d in os.listdir(prog_dir):
+                    full_path = os.path.join(prog_dir, d)
+                    if os.path.isdir(full_path):
+                        # 查找目录下的 .exe 文件（仅第一层）
+                        for f in os.listdir(full_path):
+                            if f.lower().endswith('.exe') and not any(kw in f.lower() for kw in ['unins', 'update', 'crash']):
+                                app_name = os.path.splitext(f)[0]
+                                apps.append({'name': app_name, 'path': os.path.join(full_path, f)})
+            except Exception:
+                pass
+
+    else:
+        # Linux: 扫描 .desktop 文件
+        desktop_dirs = [
+            '/usr/share/applications',
+            '/usr/local/share/applications',
+            os.path.expanduser('~/.local/share/applications'),
+        ]
+        for desktop_dir in desktop_dirs:
+            if not os.path.exists(desktop_dir):
+                continue
+            try:
+                for f in os.listdir(desktop_dir):
+                    if f.endswith('.desktop'):
+                        app_name = os.path.splitext(f)[0]
+                        app_path = os.path.join(desktop_dir, f)
+                        # 尝试从 .desktop 文件读取 Name
+                        try:
+                            with open(app_path, 'r', encoding='utf-8', errors='replace') as df:
+                                for line in df:
+                                    if line.startswith('Name='):
+                                        app_name = line.strip().split('=', 1)[1]
+                                        break
+                        except Exception:
+                            pass
                         apps.append({'name': app_name, 'path': app_path})
-                # 不递归进入 .app 包内部
-                dirs[:] = [d for d in dirs if not d.endswith('.app')]
-        except Exception:
-            pass
+            except Exception:
+                pass
+
     # 去重并按名称排序
     seen = set()
     unique_apps = []

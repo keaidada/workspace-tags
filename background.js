@@ -184,7 +184,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'openTerminal') {
     chrome.runtime.sendNativeMessage(
       NATIVE_HOST_NAME,
-      { action: 'openTerminal', path: request.path || '', app: request.app || 'Terminal' },
+      { action: 'openTerminal', path: request.path || '', app: request.app || '' },
       (response) => {
         if (chrome.runtime.lastError) {
           sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
