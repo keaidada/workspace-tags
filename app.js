@@ -403,6 +403,16 @@ class FileManager {
     await this.save();
   }
 
+  /** 重命名文件记录（更新 name 和 path） */
+  async renameFileRecord(fileId, newName, newPath) {
+    const file = this.files.find((f) => f.id === fileId);
+    if (!file) return null;
+    file.name = newName;
+    if (newPath) file.path = newPath;
+    await this.save();
+    return file;
+  }
+
   getFilteredFiles(activeTags, filterNoTag, searchQuery, sortOrder, tagDisplayMode, searchTags) {
     let filtered = [...this.files];
 
@@ -2733,13 +2743,23 @@ class UIController {
     // 绑定卡片点击选中（点击卡片空白区域也能切换选中）
     container.querySelectorAll('.file-card').forEach((card) => {
       card.addEventListener('click', (e) => {
-        // 如果点击的是按钮或链接，不处理
-        if (e.target.closest('.file-action-btn') || e.target.closest('.file-checkbox')) return;
+        // 如果点击的是按钮、链接或正在编辑的文件名，不处理
+        if (e.target.closest('.file-action-btn') || e.target.closest('.file-checkbox') || e.target.closest('.file-name-editing') || e.target.closest('.file-name-editable')) return;
         const cb = card.querySelector('.file-checkbox');
         if (cb) {
           cb.checked = !cb.checked;
           cb.dispatchEvent(new Event('change'));
         }
+      });
+    });
+
+    // 绑定双击文件名进行重命名
+    container.querySelectorAll('.file-name-editable').forEach((nameEl) => {
+      nameEl.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const fileId = nameEl.getAttribute('data-file-id');
+        this.startEditFileName(fileId, nameEl);
       });
     });
 
@@ -3101,6 +3121,128 @@ class UIController {
       }
     }
     return names;
+  }
+
+  // ==========================================
+  // 文件重命名
+  // ==========================================
+
+  /**
+   * 开始编辑文件名（双击触发）
+   * 将文件名 div 替换为 input 输入框
+   */
+  startEditFileName(fileId, nameEl) {
+    // 防止重复进入编辑状态
+    if (nameEl.classList.contains('file-name-editing')) return;
+
+    const file = this.fileManager.files.find((f) => f.id === fileId);
+    if (!file) return;
+
+    const oldName = file.name;
+    nameEl.classList.add('file-name-editing');
+    nameEl.classList.remove('file-name-editable');
+
+    // 创建输入框
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'file-name-input';
+    input.value = oldName;
+
+    // 如果有扩展名，选中文件名（不含扩展名）
+    const dotIdx = oldName.lastIndexOf('.');
+    const selectEnd = dotIdx > 0 ? dotIdx : oldName.length;
+
+    // 清空 div 内容并插入 input
+    nameEl.textContent = '';
+    nameEl.appendChild(input);
+
+    // 聚焦并选中文件名（不含扩展名）
+    input.focus();
+    input.setSelectionRange(0, selectEnd);
+
+    // 确认重命名的逻辑
+    const confirmRename = async () => {
+      const newName = input.value.trim();
+
+      // 恢复显示状态
+      nameEl.classList.remove('file-name-editing');
+      nameEl.classList.add('file-name-editable');
+
+      if (!newName || newName === oldName) {
+        // 取消编辑，恢复原文件名
+        nameEl.textContent = oldName;
+        return;
+      }
+
+      // 校验文件名
+      if (/[\/\\]/.test(newName)) {
+        this.showToast('文件名不能包含路径分隔符', 'error');
+        nameEl.textContent = oldName;
+        return;
+      }
+
+      // 如果文件有本地路径，通过 Native Host 重命名本地文件
+      if (file.path) {
+        try {
+          nameEl.textContent = newName; // 先乐观更新UI
+          const result = await this.sendNativeAction('renameFile', {
+            oldPath: file.path,
+            newName: newName,
+          });
+
+          if (result && result.success) {
+            // 更新文件记录
+            await this.fileManager.renameFileRecord(fileId, newName, result.newPath);
+            // 清除旧路径的文件信息缓存
+            delete this.fileInfoCache[file.path];
+            // 更新卡片上的 data 属性
+            const card = nameEl.closest('.file-card');
+            if (card) {
+              card.setAttribute('data-filename', newName);
+              card.setAttribute('data-filepath', result.newPath);
+            }
+            this.showToast(`文件已重命名: ${oldName} → ${newName}`, 'success');
+            // 刷新文件信息
+            this.loadFileInfoForVisibleCards();
+          } else {
+            nameEl.textContent = oldName;
+            this.showToast(result?.error || '重命名失败', 'error');
+          }
+        } catch (err) {
+          nameEl.textContent = oldName;
+          this.showToast('重命名失败: ' + err.message, 'error');
+        }
+      } else {
+        // 没有本地路径的文件，只更新记录中的名称
+        await this.fileManager.renameFileRecord(fileId, newName);
+        nameEl.textContent = newName;
+        const card = nameEl.closest('.file-card');
+        if (card) card.setAttribute('data-filename', newName);
+        this.showToast(`文件名已更新: ${oldName} → ${newName}`, 'success');
+      }
+    };
+
+    // 回车确认
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur();
+      } else if (e.key === 'Escape') {
+        // ESC 取消
+        e.preventDefault();
+        input.value = oldName;
+        input.blur();
+      }
+    });
+
+    // 失焦确认
+    input.addEventListener('blur', () => {
+      confirmRename();
+    });
+
+    // 阻止冒泡（避免触发卡片选中等事件）
+    input.addEventListener('click', (e) => e.stopPropagation());
+    input.addEventListener('dblclick', (e) => e.stopPropagation());
   }
 
   /**
@@ -3643,7 +3785,7 @@ class UIController {
           ${this.getFileEmoji(ext)}
         </div>
         <div class="file-info">
-          <div class="file-name" title="${this.escapeHtml(filePath || file.name)}">${this.escapeHtml(file.name)}</div>
+          <div class="file-name file-name-editable" data-file-id="${file.id}" title="${this.escapeHtml(filePath || file.name)}">${this.escapeHtml(file.name)}</div>
           <div class="file-meta">
             <span class="file-time">${time}</span>
             ${filePath ? `<span class="file-path-hint" title="${this.escapeHtml(filePath)}">${this.escapeHtml(filePath)}</span>` : ''}

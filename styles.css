@@ -981,6 +981,40 @@ html, body {
   text-overflow: ellipsis;
 }
 
+.file-name-editable {
+  cursor: text;
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin: -1px -4px;
+  transition: background var(--transition);
+}
+
+.file-name-editable:hover {
+  background: rgba(99, 102, 241, 0.08);
+  outline: 1px dashed rgba(99, 102, 241, 0.3);
+}
+
+.file-name-editing {
+  padding: 0;
+  margin: 0;
+  background: none !important;
+  outline: none !important;
+  overflow: visible;
+}
+
+.file-name-input {
+  width: 100%;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg);
+  border: 2px solid var(--primary);
+  border-radius: 4px;
+  padding: 2px 6px;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
 .file-meta {
   display: flex;
   align-items: flex-start;

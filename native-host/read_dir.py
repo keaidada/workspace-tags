@@ -634,6 +634,41 @@ def batch_get_file_info(paths):
     return {"files": results}
 
 
+def rename_file(old_path, new_name):
+    """重命名本地文件（仅修改文件名，不移动目录）"""
+    old_path = os.path.expanduser(old_path)
+    old_path = os.path.abspath(old_path)
+
+    if not os.path.exists(old_path):
+        return {"error": f"文件不存在: {old_path}"}
+
+    # 新文件名不能包含路径分隔符
+    if '/' in new_name or '\\' in new_name:
+        return {"error": "文件名不能包含路径分隔符"}
+
+    if not new_name or not new_name.strip():
+        return {"error": "文件名不能为空"}
+
+    dir_path = os.path.dirname(old_path)
+    new_path = os.path.join(dir_path, new_name)
+
+    if os.path.exists(new_path):
+        return {"error": f"目标文件已存在: {new_path}"}
+
+    try:
+        os.rename(old_path, new_path)
+        return {
+            "success": True,
+            "oldPath": old_path,
+            "newPath": new_path,
+            "newName": new_name,
+        }
+    except PermissionError:
+        return {"error": f"权限不足，无法重命名: {old_path}"}
+    except Exception as e:
+        return {"error": f"重命名失败: {str(e)}"}
+
+
 def list_installed_apps():
     """获取 macOS 上已安装的应用列表"""
     import subprocess
@@ -724,6 +759,11 @@ def main():
         elif action == 'batchGetFileInfo':
             paths = message.get('paths', [])
             result = batch_get_file_info(paths)
+            send_message(result)
+        elif action == 'renameFile':
+            old_path = message.get('oldPath', '')
+            new_name = message.get('newName', '')
+            result = rename_file(old_path, new_name)
             send_message(result)
         else:
             send_message({"error": f"未知操作: {action}"})

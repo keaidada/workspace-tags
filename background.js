@@ -166,6 +166,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'renameFile') {
+    chrome.runtime.sendNativeMessage(
+      NATIVE_HOST_NAME,
+      { action: 'renameFile', oldPath: request.oldPath, newName: request.newName },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
+        } else {
+          sendResponse(response);
+        }
+      }
+    );
+    return true;
+  }
+
   if (request.action === 'openTerminal') {
     chrome.runtime.sendNativeMessage(
       NATIVE_HOST_NAME,
