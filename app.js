@@ -56,6 +56,9 @@ class StorageService {
   static async saveSortOrder(v) { return this.set('sortOrder', v); }
   static async getTrash() { return this.get('trash', []); }
   static async saveTrash(trash) { return this.set('trash', trash); }
+  /** 目录同步映射：{ tagName: dirPath } */
+  static async getSyncDirMappings() { return this.get('syncDirMappings', {}); }
+  static async saveSyncDirMappings(mappings) { return this.set('syncDirMappings', mappings); }
 }
 
 // ==========================================
@@ -76,8 +79,11 @@ class TagManager {
     await StorageService.saveTags(this.tags);
   }
 
-  /** 添加标签，自动创建所有祖先 */
-  async addTag(tagName) {
+  /** 添加标签，自动创建所有祖先
+   *  @param {string} tagName 标签路径
+   *  @param {object} [opts] 可选配置 { source: 'auto' } 表示由目录同步自动创建
+   */
+  async addTag(tagName, opts) {
     const name = tagName.trim();
     if (!name) return null;
 
@@ -89,6 +95,7 @@ class TagManager {
       const existing = this.tags.find((t) => t.name === path);
       if (!existing) {
         const tag = { name: path, color: this.tags.length % 8 };
+        if (opts && opts.source) tag.source = opts.source;
         this.tags.push(tag);
         created = tag;
       } else {
@@ -101,8 +108,11 @@ class TagManager {
     return created;
   }
 
-  /** 批量添加多个标签（只在最后保存一次，适用于大目录导入） */
-  async addTagsBatch(tagNames) {
+  /** 批量添加多个标签（只在最后保存一次，适用于大目录导入）
+   *  @param {string[]} tagNames 标签路径列表
+   *  @param {object} [opts] 可选配置 { source: 'auto' } 表示由目录同步自动创建
+   */
+  async addTagsBatch(tagNames, opts) {
     const existingSet = new Set(this.tags.map((t) => t.name));
     let addedCount = 0;
 
@@ -115,6 +125,7 @@ class TagManager {
         const path = parts.slice(0, i).join('/');
         if (!existingSet.has(path)) {
           const tag = { name: path, color: this.tags.length % 8 };
+          if (opts && opts.source) tag.source = opts.source;
           this.tags.push(tag);
           existingSet.add(path);
           addedCount++;
@@ -127,6 +138,12 @@ class TagManager {
       this._invalidateChildrenCache();
     }
     return addedCount;
+  }
+
+  /** 判断标签是否由目录同步自动创建 */
+  isAutoTag(tagName) {
+    const tag = this.tags.find((t) => t.name === tagName);
+    return tag && tag.source === 'auto';
   }
 
   /** 删除标签及其所有子标签，返回被删除的标签名列表 */
@@ -319,51 +336,72 @@ class FileManager {
    * @param {Function} [onProgress] 进度回调 (processed, total) => void
    */
   async addFileRecordsWithTags(fileEntries, onProgress) {
-    // 构建已有文件的快速查找集（优先用 path 去重，其次用 name）
-    const existingPaths = new Set();
-    const existingNames = new Set();
+    // 构建已有文件的快速查找（优先用 path，其次用 name）
+    const existingByPath = new Map(); // path -> file record
+    const existingByName = new Map(); // name -> file record
     for (const f of this.files) {
       if (f.path) {
-        existingPaths.add(f.path);
+        existingByPath.set(f.path, f);
       } else {
-        existingNames.add(f.name);
+        existingByName.set(f.name, f);
       }
     }
 
-    let count = 0;
+    let newCount = 0;
+    let mergedCount = 0;
     const now = Date.now();
     const total = fileEntries.length;
     const progressInterval = Math.max(1, Math.floor(total / 100)); // 每 1% 回调一次
 
     for (let i = 0; i < total; i++) {
       const entry = fileEntries[i];
-      // 有 path 的用 path 去重（绝对路径唯一）；没有 path 的用 name 去重
+
+      // 检查是否已有相同 path/name 的文件
+      let existing = null;
       if (entry.path) {
-        if (existingPaths.has(entry.path)) continue;
-        existingPaths.add(entry.path);
+        existing = existingByPath.get(entry.path);
       } else {
-        if (existingNames.has(entry.name)) continue;
-        existingNames.add(entry.name);
+        existing = existingByName.get(entry.name);
       }
 
-      const file = {
-        id: this.generateId(),
-        name: entry.name,
-        addedTime: now,
-        tags: [...entry.tags],
-      };
-      if (entry.path) file.path = entry.path;
+      if (existing) {
+        // 已存在的文件：将新标签合并进去（不创建重复记录）
+        let merged = false;
+        for (const tag of entry.tags) {
+          if (!existing.tags.includes(tag)) {
+            existing.tags.push(tag);
+            merged = true;
+          }
+        }
+        if (merged) mergedCount++;
+      } else {
+        // 新文件：创建新记录
+        const file = {
+          id: this.generateId(),
+          name: entry.name,
+          addedTime: now,
+          tags: [...entry.tags],
+        };
+        if (entry.path) file.path = entry.path;
 
-      this.files.push(file);
-      count++;
+        this.files.push(file);
+        newCount++;
+
+        // 更新查找表，防止同批次内重复
+        if (entry.path) {
+          existingByPath.set(entry.path, file);
+        } else {
+          existingByName.set(entry.name, file);
+        }
+      }
 
       // 进度回调
       if (onProgress && (i % progressInterval === 0 || i === total - 1)) {
         onProgress(i + 1, total);
       }
     }
-    if (count > 0) await this.save();
-    return count;
+    if (newCount > 0 || mergedCount > 0) await this.save();
+    return newCount + mergedCount;
   }
 
   async removeFile(fileId) {
@@ -386,13 +424,33 @@ class FileManager {
     await this.save();
   }
 
-  /** 删除标签时从所有文件中移除该标签及其子标签 */
+  /** 删除标签时从所有文件中移除该标签及其子标签，并将无标签孤儿文件移入回收站 */
   async removeTagFromAllFiles(tagNames) {
     const nameSet = new Set(tagNames);
+    const now = Date.now();
+    const orphans = [];
+
     this.files.forEach((file) => {
       file.tags = file.tags.filter((t) => !nameSet.has(t));
+      if (file.tags.length === 0) {
+        orphans.push(file);
+      }
     });
-    await this.save();
+
+    // 将无标签孤儿文件移入回收站
+    if (orphans.length > 0) {
+      const orphanIds = new Set(orphans.map((f) => f.id));
+      orphans.forEach((f) => {
+        f.deletedTime = now;
+        this.trash.push(f);
+      });
+      this.files = this.files.filter((f) => !orphanIds.has(f.id));
+      await Promise.all([this.save(), this.saveTrash()]);
+    } else {
+      await this.save();
+    }
+
+    return orphans.length;
   }
 
   /** 重命名标签时更新所有文件中的标签名 */
@@ -642,12 +700,16 @@ class UIController {
     // 回收站搜索
     this.trashSearchQuery = '';
     this.trashSearchTags = new Set();
+
+    // 目录同步映射 { tagName: dirPath }
+    this.syncDirMappings = {};
   }
 
   async init() {
     await this.tagManager.load();
     await this.fileManager.load();
     this.sortOrder = await StorageService.getSortOrder();
+    this.syncDirMappings = await StorageService.getSyncDirMappings();
     this.bindEvents();
     this.render();
     // 异步加载已安装应用列表（不阻塞主流程）
@@ -970,6 +1032,14 @@ class UIController {
       this.hideContextMenu();
       this.uploadDirForTag(this.ctxTagName);
     });
+    ctxMenu.querySelector('[data-action="sync-dir"]').addEventListener('click', () => {
+      this.hideContextMenu();
+      this.syncDirFilesForTag(this.ctxTagName);
+    });
+    ctxMenu.querySelector('[data-action="create-dir-structure"]').addEventListener('click', () => {
+      this.hideContextMenu();
+      this.showCreateDirModal(this.ctxTagName);
+    });
     ctxMenu.querySelector('[data-action="rename"]').addEventListener('click', () => {
       this.hideContextMenu();
       this.showRenameTagModal(this.ctxTagName);
@@ -1001,9 +1071,39 @@ class UIController {
     });
     document.getElementById('btn-confirm-add-files').addEventListener('click', () => this.confirmAddFiles());
 
-    // 上传区域点击
-    document.getElementById('upload-area').addEventListener('click', () => {
-      document.getElementById('file-picker').click();
+    // 上传区域点击 - 使用 Native Host 选择文件以获取真实路径
+    document.getElementById('upload-area').addEventListener('click', async (e) => {
+      console.log('[upload-area] clicked, calling native chooseFiles');
+      try {
+        this.showToast('正在打开文件选择对话框...', 'info');
+        const response = await this.sendNativeAction('chooseFiles', {}, 120000);
+        console.log('[upload-area] chooseFiles response:', response);
+        
+        if (response.cancelled) {
+          console.log('[upload-area] user cancelled');
+          return;
+        }
+        
+        if (response.error) {
+          this.showToast(`选择文件失败: ${response.error}`, 'error');
+          return;
+        }
+        
+        if (response.files && response.files.length > 0) {
+          // 将选中的文件添加到待处理列表
+          for (const filePath of response.files) {
+            const fileName = filePath.split('/').pop().split('\\').pop(); // 兼容 Windows 和 macOS
+            if (!this.pendingFileNames.some((f) => f.fullPath === filePath)) {
+              this.pendingFileNames.push({ name: fileName, dirPath: '', fullPath: filePath });
+            }
+          }
+          console.log('[upload-area] pendingFileNames now:', this.pendingFileNames.length);
+          this.renderPendingFiles();
+        }
+      } catch (err) {
+        console.error('[upload-area] chooseFiles error:', err);
+        this.showToast(`选择文件失败: ${err.message}`, 'error');
+      }
     });
 
     // 上传区域拖拽
@@ -1021,8 +1121,16 @@ class UIController {
       this.handleUploadDrop(e);
     });
 
-    // 文件选择回调
+    // 文件选择回调（弹窗内的文件选择器）
+    document.getElementById('file-picker-modal').addEventListener('change', (e) => {
+      console.log('[file-picker-modal] change event fired, files:', e.target.files);
+      this.handleFileSelect(e.target.files);
+      e.target.value = '';
+    });
+
+    // 文件选择回调（全局的文件选择器，保留兼容性）
     document.getElementById('file-picker').addEventListener('change', (e) => {
+      console.log('[file-picker] change event fired, files:', e.target.files);
       this.handleFileSelect(e.target.files);
       e.target.value = '';
     });
@@ -1275,6 +1383,13 @@ class UIController {
     document.getElementById('btn-confirm-cleanup')?.addEventListener('click', () => this.confirmCleanup());
     document.getElementById('btn-empty-trash')?.addEventListener('click', () => this.emptyTrash());
     document.getElementById('btn-restore-all')?.addEventListener('click', () => this.restoreAllFromTrash());
+
+    // --- 生成目录结构弹窗 ---
+    document.getElementById('btn-create-dir-browse')?.addEventListener('click', () => this._createDirBrowse());
+    document.getElementById('btn-create-dir-confirm')?.addEventListener('click', () => this._createDirFromManual());
+    document.getElementById('create-dir-manual-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this._createDirFromManual();
+    });
   }
 
   // ==========================================
@@ -1345,6 +1460,11 @@ class UIController {
       renameBtn.style.display = '';
       divider.style.display = '';
     }
+
+    // 同步目录按钮：查找当前标签或其祖先标签是否关联了同步目录
+    const syncDirBtn = menu.querySelector('[data-action="sync-dir"]');
+    const hasSyncDir = this._findSyncDirForTag(tagName) !== null;
+    syncDirBtn.style.display = hasSyncDir ? '' : 'none';
 
     menu.style.display = 'block';
     menu.style.left = e.pageX + 'px';
@@ -1507,6 +1627,25 @@ class UIController {
       }
     }
 
+    // 更新同步目录映射中的标签名
+    let syncDirChanged = false;
+    const newMappings = {};
+    for (const [key, val] of Object.entries(this.syncDirMappings)) {
+      if (key === oldName) {
+        newMappings[newName] = val;
+        syncDirChanged = true;
+      } else if (key.startsWith(oldName + '/')) {
+        newMappings[newName + key.substring(oldName.length)] = val;
+        syncDirChanged = true;
+      } else {
+        newMappings[key] = val;
+      }
+    }
+    if (syncDirChanged) {
+      this.syncDirMappings = newMappings;
+      await StorageService.saveSyncDirMappings(this.syncDirMappings);
+    }
+
     this.closeModal('modal-rename-tag');
     this.showToast(`标签已重命名为 "${newName}"`, 'success');
     this.render();
@@ -1538,7 +1677,7 @@ class UIController {
     if (!this.pendingDeleteTag) return;
 
     const removedNames = await this.tagManager.removeTag(this.pendingDeleteTag);
-    await this.fileManager.removeTagFromAllFiles(removedNames);
+    const orphanCount = await this.fileManager.removeTagFromAllFiles(removedNames);
 
     // 从选中的筛选标签中移除已删除的标签
     for (const t of [...this.activeTags]) {
@@ -1547,8 +1686,24 @@ class UIController {
       }
     }
 
+    // 清理同步目录映射：删除被删除标签及其子标签的映射
+    let syncDirChanged = false;
+    for (const key of Object.keys(this.syncDirMappings)) {
+      if (key === this.pendingDeleteTag || key.startsWith(this.pendingDeleteTag + '/')) {
+        delete this.syncDirMappings[key];
+        syncDirChanged = true;
+      }
+    }
+    if (syncDirChanged) {
+      await StorageService.saveSyncDirMappings(this.syncDirMappings);
+    }
+
     this.closeModal('modal-confirm');
-    this.showToast(`标签 "${this.pendingDeleteTag}" 已删除`, 'info');
+    let msg = `标签 "${this.pendingDeleteTag}" 已删除`;
+    if (orphanCount > 0) {
+      msg += `，${orphanCount} 个无标签文件已移入回收站`;
+    }
+    this.showToast(msg, 'info');
     this.pendingDeleteTag = null;
     this.render();
   }
@@ -1586,6 +1741,10 @@ class UIController {
     this.showAddFilesModal(tagName);
   }
 
+  /**
+   * 渲染标签选择树（带折叠功能）
+   * 默认只展开与 selectedTags 相关的路径
+   */
   renderModalTagSelect() {
     const container = document.getElementById('modal-tag-select');
     const allTags = this.tagManager.getAllTags();
@@ -1602,24 +1761,124 @@ class UIController {
       return;
     }
 
-    container.innerHTML = sortedNames.map((name) => {
-      const checked = this.selectedTags.has(name) ? 'checked' : '';
-      const depth = (name.match(/\//g) || []).length;
+    // 构建树形结构
+    const tree = this.buildTagTree(sortedNames);
+
+    // 确定需要展开的路径（包含 selectedTags 的路径）
+    const expandedPaths = new Set();
+    for (const tag of this.selectedTags) {
+      // 展开该标签及其所有祖先路径
+      const parts = tag.split('/');
+      let path = '';
+      for (const part of parts) {
+        path = path ? `${path}/${part}` : part;
+        expandedPaths.add(path);
+      }
+    }
+
+    // 渲染树
+    container.innerHTML = this.renderTagTreeNodes(tree, '', expandedPaths);
+
+    // 绑定事件
+    this.bindTagTreeEvents(container, expandedPaths);
+  }
+
+  /**
+   * 构建标签树结构
+   */
+  buildTagTree(tagNames) {
+    const tree = {};
+    for (const fullName of tagNames) {
+      const parts = fullName.split('/');
+      let current = tree;
+      let path = '';
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        path = path ? `${path}/${part}` : part;
+        if (!current[part]) {
+          current[part] = { __fullPath: path, __children: {} };
+        }
+        current = current[part].__children;
+      }
+    }
+    return tree;
+  }
+
+  /**
+   * 渲染标签树节点
+   */
+  renderTagTreeNodes(tree, parentPath, expandedPaths) {
+    const keys = Object.keys(tree).sort((a, b) => a.localeCompare(b));
+    if (keys.length === 0) return '';
+
+    return keys.map((key) => {
+      const node = tree[key];
+      const fullPath = node.__fullPath;
+      const children = node.__children;
+      const hasChildren = Object.keys(children).length > 0;
+      const isExpanded = expandedPaths.has(fullPath);
+      const isSelected = this.selectedTags.has(fullPath);
+
+      // 只显示当前层级的名称（不显示完整路径）
+      const displayName = key;
+
       return `
-        <label class="tag-select-item" style="padding-left: ${8 + depth * 16}px;">
-          <input type="checkbox" value="${this.escapeHtml(name)}" ${checked}>
-          <span>${this.escapeHtml(name)}</span>
-        </label>
+        <div class="tag-tree-node" data-path="${this.escapeHtml(fullPath)}">
+          <div class="tag-tree-node-header${isSelected ? ' selected' : ''}">
+            <span class="tag-tree-node-toggle${hasChildren ? (isExpanded ? ' expanded' : '') : ' hidden'}">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+            </span>
+            <input type="checkbox" class="tag-tree-node-checkbox" value="${this.escapeHtml(fullPath)}" ${isSelected ? 'checked' : ''}>
+            <span class="tag-tree-node-label">${this.escapeHtml(displayName)}</span>
+          </div>
+          ${hasChildren ? `<div class="tag-tree-children${isExpanded ? ' expanded' : ''}">${this.renderTagTreeNodes(children, fullPath, expandedPaths)}</div>` : ''}
+        </div>
       `;
     }).join('');
+  }
 
-    container.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+  /**
+   * 绑定标签树事件
+   */
+  bindTagTreeEvents(container, expandedPaths) {
+    // 折叠/展开事件
+    container.querySelectorAll('.tag-tree-node-toggle:not(.hidden)').forEach((toggle) => {
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const node = toggle.closest('.tag-tree-node');
+        const children = node.querySelector('.tag-tree-children');
+        if (children) {
+          const isExpanded = children.classList.contains('expanded');
+          children.classList.toggle('expanded', !isExpanded);
+          toggle.classList.toggle('expanded', !isExpanded);
+        }
+      });
+    });
+
+    // checkbox 事件
+    container.querySelectorAll('.tag-tree-node-checkbox').forEach((cb) => {
       cb.addEventListener('change', () => {
+        const header = cb.closest('.tag-tree-node-header');
         if (cb.checked) {
           this.selectedTags.add(cb.value);
+          header.classList.add('selected');
         } else {
           this.selectedTags.delete(cb.value);
+          header.classList.remove('selected');
         }
+      });
+    });
+
+    // 点击整行也可以切换选中（除了 toggle 按钮）
+    container.querySelectorAll('.tag-tree-node-header').forEach((header) => {
+      header.addEventListener('click', (e) => {
+        // 如果点击的是 toggle 或 checkbox，不处理
+        if (e.target.closest('.tag-tree-node-toggle') || e.target.classList.contains('tag-tree-node-checkbox')) {
+          return;
+        }
+        const cb = header.querySelector('.tag-tree-node-checkbox');
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event('change'));
       });
     });
   }
@@ -1653,14 +1912,25 @@ class UIController {
   }
 
   handleFileSelect(fileList) {
-    if (!fileList || fileList.length === 0) return;
+    console.log('[handleFileSelect] called, fileList:', fileList, 'length:', fileList?.length);
+    if (!fileList || fileList.length === 0) {
+      console.log('[handleFileSelect] empty fileList, returning');
+      return;
+    }
     for (const file of fileList) {
       const name = file.name;
+      console.log('[handleFileSelect] adding file:', name);
       if (!this.pendingFileNames.some((f) => f.fullPath === name)) {
         this.pendingFileNames.push({ name, dirPath: '', fullPath: name });
       }
     }
-    this.renderPendingFiles();
+    console.log('[handleFileSelect] pendingFileNames now:', this.pendingFileNames.length);
+    try {
+      this.renderPendingFiles();
+      console.log('[handleFileSelect] renderPendingFiles() completed');
+    } catch (err) {
+      console.error('[handleFileSelect] renderPendingFiles() error:', err);
+    }
   }
 
   handleUploadDrop(e) {
@@ -1718,7 +1988,9 @@ class UIController {
   }
 
   renderPendingFiles() {
+    console.log('[renderPendingFiles] called, pendingFileNames:', this.pendingFileNames.length);
     const container = document.getElementById('pending-files-list');
+    console.log('[renderPendingFiles] container element:', container);
     if (this.pendingFileNames.length === 0) {
       container.innerHTML = '';
       return;
@@ -1737,7 +2009,7 @@ class UIController {
 
     const dirInfo = dirs.size > 0 ? `<p class="pending-dir-info">📁 将自动创建 ${dirs.size} 个目录标签</p>` : '';
 
-    container.innerHTML = `
+    const html = `
       <h4>${this.pendingFileNames.length} 个文件待添加：</h4>
       ${dirInfo}
       <div class="pending-files-wrap">
@@ -1751,6 +2023,9 @@ class UIController {
         `).join('')}
       </div>
     `;
+    console.log('[renderPendingFiles] setting innerHTML');
+    container.innerHTML = html;
+    console.log('[renderPendingFiles] container innerHTML set, container now:', container.innerHTML.substring(0, 100));
 
     container.querySelectorAll('.pending-file-remove').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1828,7 +2103,8 @@ class UIController {
       }
       const entry = { name: f.name, tags: fileTags };
       // 如果有完整路径，记录为文件的真实绝对路径
-      if (f.fullPath && f.fullPath.startsWith('/')) {
+      // 支持 macOS/Linux（以 / 开头）和 Windows（以盘符如 C:\ 开头）
+      if (f.fullPath && (f.fullPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(f.fullPath))) {
         entry.path = f.fullPath;
       }
       return entry;
@@ -1853,6 +2129,415 @@ class UIController {
   // ==========================================
 
   _dirTagTarget = null;
+  _createDirTagTarget = null;
+
+  /**
+   * 显示"生成目录结构"弹窗
+   * 根据当前标签及其子标签的层级，预览将在本地生成的目录结构
+   */
+  showCreateDirModal(tagName) {
+    this._createDirTagTarget = tagName;
+
+    // 收集该标签及其所有子标签的路径
+    const allTags = this.tagManager.getAllTags();
+    const prefix = tagName + '/';
+    const childTags = allTags
+      .filter((t) => t.name === tagName || t.name.startsWith(prefix))
+      .map((t) => t.name);
+
+    // 统计将移动的文件数（与 _doCreateDir 中的匹配策略一致：isDescendantOrSelf）
+    let fileCount = 0;
+    for (const file of this.fileManager.files) {
+      if (!file.path || !file.tags) continue;
+      if (file.tags.some((ft) => this.tagManager.isDescendantOrSelf(ft, tagName))) {
+        fileCount++;
+      }
+    }
+
+    // 生成预览：标签名中的 / 对应目录层级
+    const displayName = this.tagManager.getDisplayName(tagName);
+    const subTagCount = childTags.length > 1 ? childTags.length - 1 : 0;
+    let hintText = `标签 "${displayName}" 及 ${subTagCount} 个子标签`;
+    if (fileCount > 0) {
+      hintText += `，关联 ${fileCount} 个文件将同步到对应目录`;
+    }
+    document.getElementById('create-dir-hint').textContent = hintText;
+
+    // 根据是否有文件可移动来显示/隐藏"保留源文件"选项
+    const keepSourceLabel = document.querySelector('.create-dir-keep-source');
+    const keepSourceCheckbox = document.getElementById('create-dir-keep-source');
+    if (keepSourceLabel) {
+      keepSourceLabel.style.display = fileCount > 0 ? 'flex' : 'none';
+    }
+    if (keepSourceCheckbox) {
+      keepSourceCheckbox.checked = true; // 默认勾选（即默认复制，保留源文件）
+    }
+
+    // 渲染预览目录树（最多显示 30 个）
+    const preview = document.getElementById('create-dir-preview');
+    const maxPreview = 30;
+    const previewTags = childTags.slice(0, maxPreview);
+    const treeHtml = previewTags.map((t) => {
+      const depth = t.split('/').length - tagName.split('/').length;
+      const name = t.split('/').pop();
+      // 统计该标签下直接关联的文件数
+      const tagFileCount = this.fileManager.files.filter(
+        (f) => f.path && f.tags && f.tags.includes(t)
+      ).length;
+      const countBadge = tagFileCount > 0
+        ? `<span style="color: var(--text-muted); font-size: 12px; margin-left: 4px;">(${tagFileCount} 个文件)</span>`
+        : '';
+      return `<div class="create-dir-tree-item" style="padding-left: ${8 + depth * 16}px;">
+        <svg viewBox="0 0 24 24" width="14" height="14" style="opacity:0.5;vertical-align:-2px;margin-right:4px;"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+        ${this.escapeHtml(name)}${countBadge}
+      </div>`;
+    }).join('');
+    const moreHtml = childTags.length > maxPreview
+      ? `<div class="create-dir-tree-item" style="padding-left: 8px; color: var(--text-muted);">...还有 ${childTags.length - maxPreview} 个</div>`
+      : '';
+    preview.innerHTML = treeHtml + moreHtml;
+
+    // 重置输入
+    document.getElementById('create-dir-manual-input').value = '';
+    this._createDirBasePath = null;
+
+    this.openModal('modal-create-dir');
+  }
+
+  /**
+   * 通过系统目录选择对话框选择基础路径
+   */
+  async _createDirBrowse() {
+    try {
+      this.showToast('正在打开目录选择对话框...', 'info');
+      const response = await this.sendNativeAction('chooseDirectory', {}, 120000);
+
+      if (response.cancelled) return;
+
+      if (response.path) {
+        this._createDirBasePath = response.path;
+        document.getElementById('create-dir-manual-input').value = response.path;
+        // 直接执行
+        await this._doCreateDir(response.path);
+      }
+    } catch (err) {
+      this.showToast(`选择目录失败: ${err.message}`, 'error');
+    }
+  }
+
+  /**
+   * 手动输入基础路径后生成目录
+   */
+  async _createDirFromManual() {
+    const input = document.getElementById('create-dir-manual-input');
+    if (!input) {
+      console.error('找不到 create-dir-manual-input');
+      return;
+    }
+    const basePath = input.value.trim();
+    if (!basePath) {
+      this.showToast('请输入基础路径', 'error');
+      return;
+    }
+    console.log('[createDir] 手动输入路径:', basePath);
+    await this._doCreateDir(basePath);
+  }
+
+  /**
+   * 执行创建目录结构
+   */
+  async _doCreateDir(basePath) {
+    const tagName = this._createDirTagTarget;
+    if (!tagName) {
+      console.error('[createDir] _createDirTagTarget 为空');
+      return;
+    }
+
+    // 收集该标签及其所有子标签的完整路径
+    const allTags = this.tagManager.getAllTags();
+    const prefix = tagName + '/';
+    const fullTagPaths = allTags
+      .filter((t) => t.name === tagName || t.name.startsWith(prefix))
+      .map((t) => t.name);
+
+    if (fullTagPaths.length === 0) {
+      this.showToast('没有可生成的标签', 'error');
+      return;
+    }
+
+    // 将完整标签路径转为相对于当前标签的路径
+    // 例如：tagName = "项目/项目/tmp"
+    //   "项目/项目/tmp"      → "tmp"（当前标签自身，取最后一段）
+    //   "项目/项目/tmp/子目录" → "tmp/子目录"（去掉父级前缀）
+    const tagNameParts = tagName.split('/');
+    const parentPrefix = tagNameParts.slice(0, -1).join('/'); // "项目/项目"
+    const stripPrefix = parentPrefix ? parentPrefix + '/' : ''; // "项目/项目/"
+
+    const tagPaths = fullTagPaths.map((t) => {
+      if (stripPrefix && t.startsWith(stripPrefix)) {
+        return t.substring(stripPrefix.length); // "项目/项目/tmp" → "tmp"
+      }
+      return t;
+    });
+
+    // 建立完整路径 → 相对路径的映射，供文件移动使用
+    const fullToRelMap = new Map();
+    for (let i = 0; i < fullTagPaths.length; i++) {
+      fullToRelMap.set(fullTagPaths[i], tagPaths[i]);
+    }
+    const fullTagPathSet = new Set(fullTagPaths);
+
+    // 收集需要移动的文件
+    // 匹配策略：与侧边栏视图一致，使用 isDescendantOrSelf 匹配
+    // 目标目录：使用去掉父层前缀后的相对路径
+    const fileMoves = [];
+    const fileMovesMap = new Map(); // fileId -> {src, destDir, tagName}
+
+    for (const file of this.fileManager.files) {
+      if (!file.path || !file.tags) continue;
+
+      let bestMatch = null;
+      let bestRelPath = null;
+      let bestDepth = -1;
+
+      for (const ft of file.tags) {
+        // 检查该文件标签是否属于目标标签树（与侧边栏筛选逻辑一致）
+        if (this.tagManager.isDescendantOrSelf(ft, tagName)) {
+          const depth = ft.split('/').length;
+          if (depth > bestDepth) {
+            bestDepth = depth;
+            bestMatch = ft;
+            // 使用映射得到相对路径，如果没有映射则手动去掉前缀
+            if (fullToRelMap.has(ft)) {
+              bestRelPath = fullToRelMap.get(ft);
+            } else if (stripPrefix && ft.startsWith(stripPrefix)) {
+              bestRelPath = ft.substring(stripPrefix.length);
+            } else {
+              bestRelPath = ft;
+            }
+          }
+        }
+      }
+
+      if (bestMatch && bestRelPath) {
+        fileMoves.push({ src: file.path, destDir: bestRelPath });
+        fileMovesMap.set(file.id, { src: file.path, destDir: bestRelPath });
+      }
+    }
+
+    // 读取"保留源文件"选项
+    const keepSourceCheckbox = document.getElementById('create-dir-keep-source');
+    const keepSource = keepSourceCheckbox ? keepSourceCheckbox.checked : false;
+
+    console.log('[createDir] basePath:', basePath, 'tagPaths:', JSON.stringify(tagPaths), 'fileMoves count:', fileMoves.length, 'keepSource:', keepSource);
+    console.log('[createDir] fileMoves detail:', JSON.stringify(fileMoves.slice(0, 10)));
+    if (fileMoves.length > 10) console.log('[createDir] ... and', fileMoves.length - 10, 'more');
+
+    try {
+      this.showToast(keepSource ? '正在创建目录结构并复制文件...' : '正在创建目录结构并移动文件...', 'info');
+
+      let response;
+      try {
+        // 使用较长超时（120秒），因为移动大量文件可能需要较长时间
+        response = await new Promise((resolve, reject) => {
+          if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+            reject(new Error('当前环境不支持 Native Messaging'));
+            return;
+          }
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              reject(new Error('Native Host 响应超时 (createDirStructure, 120s)'));
+            }
+          }, 120000);
+          chrome.runtime.sendMessage(
+            { action: 'createDirStructure', basePath, tagPaths, fileMoves, keepSource },
+            (resp) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              console.log('[createDir] 收到响应:', resp);
+              if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+              } else {
+                resolve(resp);
+              }
+            }
+          );
+        });
+      } catch (err) {
+        console.error('[createDir] Native Host 调用失败:', err);
+        this.showToast(`操作失败: ${err.message}`, 'error');
+        return;
+      }
+
+      // 响应为空（Native Host 可能崩溃了）
+      if (!response) {
+        console.error('[createDir] 收到空响应，Native Host 可能崩溃');
+        this.showToast('操作失败：Native Host 未返回结果，请检查控制台', 'error');
+        return;
+      }
+
+      if (response.error) {
+        this.showToast(response.error, 'error');
+        return;
+      }
+
+      // 更新已移动/复制文件的路径记录
+      const movedFiles = (response && response.movedFiles) || [];
+      let pathUpdated = 0;
+      for (const moved of movedFiles) {
+        // 找到所有匹配的文件记录（同一路径可能有多条记录），全部更新 path
+        const matchedFiles = this.fileManager.files.filter((f) => f.path === moved.src);
+        for (const file of matchedFiles) {
+          if (moved.dest) {
+            // 清除旧缓存
+            delete this.fileInfoCache[file.path];
+            file.path = moved.dest;
+            pathUpdated++;
+          }
+        }
+        // 如果按路径没找到，尝试通过 fileMovesMap 按 id 查找
+        // （应对前端路径与 native 返回路径格式略有差异的情况）
+        if (matchedFiles.length === 0 && moved.dest) {
+          for (const [fileId, moveInfo] of fileMovesMap) {
+            if (moveInfo.src === moved.src || moved.src.endsWith(moveInfo.src.replace(/^\//, '')) || moveInfo.src.endsWith(moved.src.replace(/^\//, ''))) {
+              const file = this.fileManager.files.find((f) => f.id === fileId);
+              if (file && file.path !== moved.dest) {
+                delete this.fileInfoCache[file.path];
+                file.path = moved.dest;
+                pathUpdated++;
+              }
+            }
+          }
+        }
+      }
+      if (pathUpdated > 0) {
+        await this.fileManager.save();
+      }
+
+      this.closeModal('modal-create-dir');
+
+      const created = (response && response.created) || [];
+      const skipped = (response && response.skipped) || [];
+      const errors = (response && response.errors) || [];
+      const moveErrors = (response && response.moveErrors) || [];
+      const actionWord = keepSource ? '复制' : '移动';
+
+      // 统计降级复制的文件数
+      const fallbackCopyCount = movedFiles.filter((m) => m.fallback_copy).length;
+      const normalMovedCount = movedFiles.length - fallbackCopyCount;
+
+      let msg = `已在 ${basePath} 下`;
+      if (created.length > 0) msg += ` 创建 ${created.length} 个目录`;
+      if (skipped.length > 0) msg += `，${skipped.length} 个目录已存在`;
+      if (normalMovedCount > 0) msg += `，${actionWord} ${normalMovedCount} 个文件`;
+      if (fallbackCopyCount > 0) msg += `，${fallbackCopyCount} 个文件因权限不足已复制(未删除源文件)`;
+      if (errors.length > 0) msg += `，${errors.length} 个目录失败`;
+      if (moveErrors.length > 0) msg += `，${moveErrors.length} 个文件${actionWord}失败`;
+
+      const hasErrors = errors.length > 0 || moveErrors.length > 0;
+      const hasFallback = fallbackCopyCount > 0;
+      this.showToast(msg, (hasErrors || hasFallback) ? 'warning' : 'success');
+
+      if (errors.length > 0) console.warn('创建目录失败:', errors);
+      if (moveErrors.length > 0) console.warn('移动文件失败:', moveErrors);
+
+      // 有失败或降级复制时，弹窗显示详情
+      if (moveErrors.length > 0 || fallbackCopyCount > 0 || errors.length > 0) {
+        this._showMoveErrorsModal(actionWord, moveErrors, movedFiles.filter((m) => m.fallback_copy), errors);
+      }
+
+      // 刷新文件列表UI
+      if (pathUpdated > 0) {
+        this.render();
+      }
+    } catch (err) {
+      console.error('[createDir] 错误:', err);
+      this.showToast(`操作失败: ${err.message}`, 'error');
+    }
+
+    this._createDirTagTarget = null;
+  }
+
+  /**
+   * 弹窗显示文件移动/复制的失败详情
+   * @param {string} actionWord "移动" 或 "复制"
+   * @param {Array} moveErrors 完全失败的文件 [{src, error}, ...]
+   * @param {Array} fallbackFiles 降级复制的文件 [{src, dest, fallback_copy}, ...]
+   * @param {Array} dirErrors 目录创建失败 [{path, error}, ...]
+   */
+  _showMoveErrorsModal(actionWord, moveErrors, fallbackFiles, dirErrors) {
+    const titleEl = document.getElementById('move-errors-title');
+    const summaryEl = document.getElementById('move-errors-summary');
+    const listEl = document.getElementById('move-errors-list');
+
+    const totalIssues = moveErrors.length + fallbackFiles.length + dirErrors.length;
+    titleEl.textContent = `${totalIssues} 个问题需要关注`;
+
+    const parts = [];
+    if (moveErrors.length > 0) parts.push(`${moveErrors.length} 个文件${actionWord}失败`);
+    if (fallbackFiles.length > 0) parts.push(`${fallbackFiles.length} 个文件因权限不足降级为复制（源文件未删除）`);
+    if (dirErrors.length > 0) parts.push(`${dirErrors.length} 个目录创建失败`);
+    summaryEl.textContent = parts.join('；');
+
+    let html = '';
+
+    // 移动失败的文件
+    for (const e of moveErrors) {
+      const fileName = (e.src || '').split('/').pop() || e.src || '未知文件';
+      const filePath = e.src || '';
+      const reason = e.error || '未知错误';
+      html += `
+        <div class="move-error-item">
+          <svg class="error-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd"/>
+          </svg>
+          <div class="error-info">
+            <div class="error-filename">${this.escapeHtml(fileName)}</div>
+            <div class="error-path">${this.escapeHtml(filePath)}</div>
+            <div class="error-reason">${actionWord}失败：${this.escapeHtml(reason)}</div>
+          </div>
+        </div>`;
+    }
+
+    // 降级复制的文件
+    for (const f of fallbackFiles) {
+      const fileName = (f.src || '').split('/').pop() || f.src || '未知文件';
+      const filePath = f.src || '';
+      html += `
+        <div class="move-error-item">
+          <svg class="error-icon warn" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
+          </svg>
+          <div class="error-info">
+            <div class="error-filename">${this.escapeHtml(fileName)}</div>
+            <div class="error-path">${this.escapeHtml(filePath)}</div>
+            <div class="error-reason" style="color: #f59e0b;">权限不足无法移动，已降级为复制（源文件未删除）</div>
+          </div>
+        </div>`;
+    }
+
+    // 目录创建失败
+    for (const e of dirErrors) {
+      const dirPath = e.path || '未知目录';
+      const reason = e.error || '未知错误';
+      html += `
+        <div class="move-error-item">
+          <svg class="error-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd"/>
+          </svg>
+          <div class="error-info">
+            <div class="error-filename">📁 ${this.escapeHtml(dirPath)}</div>
+            <div class="error-reason">目录创建失败：${this.escapeHtml(reason)}</div>
+          </div>
+        </div>`;
+    }
+
+    listEl.innerHTML = html;
+    this.openModal('modal-move-errors');
+  }
 
   uploadDirForTag(tagName) {
     this._dirTagTarget = tagName;
@@ -1892,6 +2577,8 @@ class UIController {
 
       // 如果有分页，继续加载后续页
       let allFiles = [...response.files];
+      // dirs 只在第一页返回，包含所有子目录（包括空目录）
+      const allDirs = response.dirs || [];
       const totalPages = response.totalPages || 1;
       const absolutePath = response.absolutePath;
 
@@ -1917,12 +2604,21 @@ class UIController {
       const dirSet = new Set();
       const fileEntries = [];
 
+      // 从 dirs 列表中收集所有子目录（包括空目录）
+      for (const relDir of allDirs) {
+        // relDir 格式: "rootDir/subDir1/subDir2"
+        const parts = relDir.split('/');
+        for (let i = 1; i <= parts.length; i++) {
+          dirSet.add(parts.slice(0, i).join('/'));
+        }
+      }
+
       for (const relPath of allFiles) {
         // relPath 格式: "rootDir/subDir/file.txt"
         const parts = relPath.split('/');
         const fileName = parts[parts.length - 1];
 
-        // 收集所有目录层级
+        // 收集文件所在的所有目录层级
         for (let i = 1; i < parts.length; i++) {
           dirSet.add(parts.slice(0, i).join('/'));
         }
@@ -1941,16 +2637,20 @@ class UIController {
         });
       }
 
-      // 批量创建所有目录标签（只 save 一次）
+      // 批量创建所有目录标签（只 save 一次），标记为自动创建
       const sortedDirs = Array.from(dirSet).sort();
       const allTagNames = sortedDirs.map((dir) => `${tagName}/${dir}`);
       allTagNames.push(dateTag, tagName);
-      await this.tagManager.addTagsBatch(allTagNames);
+      await this.tagManager.addTagsBatch(allTagNames, { source: 'auto' });
 
       const count = await this.fileManager.addFileRecordsWithTags(fileEntries, (processed, total) => {
         const pct = Math.round((processed / total) * 100);
         this.showToast(`正在处理 ${allFiles.length} 个文件 (${pct}%)...`, 'info');
       });
+
+      // 记录同步目录映射
+      this.syncDirMappings[tagName] = absolutePath;
+      await StorageService.saveSyncDirMappings(this.syncDirMappings);
 
       // 只展开一级标签，不展开所有子目录
       this.expandedTags.add(tagName);
@@ -2144,16 +2844,44 @@ class UIController {
 
     try {
       // 通过 background.js → Native Host 分页读取目录
-      const firstPage = await this.sendNativeAction('listDirPaged', { path: rawPath, page: 0 });
+      // createIfNotExists: true 表示目录不存在时自动创建
+      const firstPage = await this.sendNativeAction('listDirPaged', { path: rawPath, page: 0, createIfNotExists: true });
 
-      if (!firstPage.files || firstPage.files.length === 0) {
-        this.showToast('目录为空或无可读文件', 'error');
+      // 如果是新创建的空目录，显示相应提示
+      if (firstPage.created) {
+        this.showToast(`目录 ${rawPath} 不存在，已自动创建`, 'info');
+      }
+
+      if ((!firstPage.files || firstPage.files.length === 0) &&
+          (!firstPage.dirs || firstPage.dirs.length === 0)) {
+        // 空目录（可能是新创建的），仍然需要建立关联
+        // 创建根标签并记录同步目录映射
+        const dateTag = FileManager.getDateTag();
+        const cleanBase = rawPath.replace(/\/+$/, '');
+
+        // 批量创建标签（只 save 一次）
+        await this.tagManager.addTagsBatch([dateTag, tagName], { source: 'auto' });
+
+        // 记录同步目录映射
+        this.syncDirMappings[tagName] = cleanBase;
+        await StorageService.saveSyncDirMappings(this.syncDirMappings);
+
+        // 展开标签
+        this.expandedTags.add(tagName);
+
+        const msg = firstPage.created
+          ? `已创建空目录 ${rawPath} 并关联到标签 "${tagName}"，后续可使用同步功能`
+          : `目录为空，已关联到标签 "${tagName}"，后续可使用同步功能`;
+        this.showToast(msg, 'success');
         this._dirTagTarget = null;
+        this.render();
         return;
       }
 
       // 如果有分页，继续加载后续页
-      let allFiles = [...firstPage.files];
+      let allFiles = [...(firstPage.files || [])];
+      // dirs 只在第一页返回，包含所有子目录（包括空目录）
+      const allDirs = firstPage.dirs || [];
       const totalPages = firstPage.totalPages || 1;
 
       if (totalPages > 1) {
@@ -2178,12 +2906,21 @@ class UIController {
       const dirSet = new Set();
       const fileEntries = [];
 
+      // 从 dirs 列表中收集所有子目录（包括空目录）
+      for (const relDir of allDirs) {
+        // relDir 格式: "rootDir/subDir1/subDir2"
+        const parts = relDir.split('/');
+        for (let i = 1; i <= parts.length; i++) {
+          dirSet.add(parts.slice(0, i).join('/'));
+        }
+      }
+
       for (const relPath of allFiles) {
         // relPath 格式: "rootDir/subDir/file.txt" （与 webkitRelativePath 一致）
         const parts = relPath.split('/');
         const fileName = parts[parts.length - 1];
 
-        // 收集所有目录层级（不含文件名）
+        // 收集文件所在的所有目录层级（不含文件名）
         for (let i = 1; i < parts.length; i++) {
           dirSet.add(parts.slice(0, i).join('/'));
         }
@@ -2206,16 +2943,20 @@ class UIController {
         });
       }
 
-      // 批量创建所有目录标签（只 save 一次）
+      // 批量创建所有目录标签（只 save 一次），标记为自动创建
       const sortedDirs = Array.from(dirSet).sort();
       const allTagNames = sortedDirs.map((dir) => `${tagName}/${dir}`);
       allTagNames.push(dateTag, tagName);
-      await this.tagManager.addTagsBatch(allTagNames);
+      await this.tagManager.addTagsBatch(allTagNames, { source: 'auto' });
 
       const count = await this.fileManager.addFileRecordsWithTags(fileEntries, (processed, total) => {
         const pct = Math.round((processed / total) * 100);
         this.showToast(`正在处理 ${allFiles.length} 个文件 (${pct}%)...`, 'info');
       });
+
+      // 记录同步目录映射
+      this.syncDirMappings[tagName] = rawPath.replace(/\/+$/, '');
+      await StorageService.saveSyncDirMappings(this.syncDirMappings);
 
       // 只展开一级标签，不展开所有子目录
       this.expandedTags.add(tagName);
@@ -2232,6 +2973,176 @@ class UIController {
     }
 
     this._dirTagTarget = null;
+    this.render();
+  }
+
+  // ==========================================
+  // 目录文件同步
+  // ==========================================
+
+  /**
+   * 查找标签（或其祖先标签）关联的同步目录
+   * 例如标签 "项目/tmp/子目录" 会依次检查:
+   *   "项目/tmp/子目录" -> "项目/tmp" -> "项目"
+   * @returns {{ tagName: string, dirPath: string, subPath: string } | null}
+   */
+  _findSyncDirForTag(tagName) {
+    // 精确匹配当前标签
+    if (this.syncDirMappings[tagName]) {
+      return { tagName, dirPath: this.syncDirMappings[tagName], subPath: '' };
+    }
+    // 向上查找祖先标签
+    const parts = tagName.split('/');
+    for (let i = parts.length - 1; i > 0; i--) {
+      const ancestor = parts.slice(0, i).join('/');
+      if (this.syncDirMappings[ancestor]) {
+        const subPath = parts.slice(i).join('/');
+        return { tagName: ancestor, dirPath: this.syncDirMappings[ancestor], subPath };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 同步目录文件到标签
+   * 扫描关联的目录，对比已有文件记录，增量同步新文件和新文件夹（包括空目录）
+   */
+  async syncDirFilesForTag(tagName) {
+    const syncInfo = this._findSyncDirForTag(tagName);
+    if (!syncInfo) {
+      this.showToast('该标签未关联同步目录，请先通过"添加目录到此标签"导入目录', 'error');
+      return;
+    }
+
+    const { tagName: rootTagName, dirPath } = syncInfo;
+
+    this.showToast('正在同步目录文件...', 'info');
+
+    try {
+      // 1. 通过 Native Host 分页读取目录
+      const firstPage = await this.sendNativeAction('listDirPaged', { path: dirPath, page: 0 });
+
+      if ((!firstPage.files || firstPage.files.length === 0) &&
+          (!firstPage.dirs || firstPage.dirs.length === 0)) {
+        this.showToast('目录为空或无可读文件', 'error');
+        return;
+      }
+
+      let allFiles = [...(firstPage.files || [])];
+      // dirs 只在第一页返回，包含所有子目录
+      const allDirs = firstPage.dirs || [];
+      const totalPages = firstPage.totalPages || 1;
+
+      if (totalPages > 1) {
+        this.showToast(`正在扫描目录... (共 ${firstPage.totalCount} 个文件, 第 1/${totalPages} 页)`, 'info');
+        for (let page = 1; page < totalPages; page++) {
+          try {
+            const pageResp = await this.sendNativeAction('listDirPaged', { path: dirPath, page });
+            if (pageResp && pageResp.files) {
+              allFiles = allFiles.concat(pageResp.files);
+            }
+            this.showToast(`正在扫描目录... (第 ${page + 1}/${totalPages} 页)`, 'info');
+          } catch (err) {
+            console.warn(`加载第 ${page + 1}/${totalPages} 页失败:`, err);
+          }
+        }
+      }
+
+      // 2. 构建当前已有文件的路径集合（用于快速对比）
+      const existingPaths = new Set();
+      for (const f of this.fileManager.files) {
+        if (f.path) existingPaths.add(f.path);
+      }
+
+      // 3. 构建当前已有标签集合（用于发现新增目录）
+      const existingTagNames = new Set(this.tagManager.tags.map((t) => t.name));
+
+      // 4. 收集新增文件和新增目录标签
+      const dateTag = FileManager.getDateTag();
+      const newDirSet = new Set();
+      const newFileEntries = [];
+      const cleanBase = dirPath.replace(/\/+$/, '');
+
+      // 4a. 从 dirs 列表中发现新增目录（包括空目录）
+      for (const relDir of allDirs) {
+        // relDir 格式: "rootName/sub1/sub2"
+        const parts = relDir.split('/');
+        // 构建所有层级的标签名
+        for (let i = 1; i <= parts.length; i++) {
+          const subDirPath = parts.slice(0, i).join('/');
+          const fullTagName = `${rootTagName}/${subDirPath}`;
+          if (!existingTagNames.has(fullTagName)) {
+            newDirSet.add(subDirPath);
+          }
+        }
+      }
+
+      // 4b. 从文件列表中收集新增文件
+      for (const relPath of allFiles) {
+        const parts = relPath.split('/');
+        const fileName = parts[parts.length - 1];
+
+        // 拼出绝对路径
+        const absolutePath = `${cleanBase}/${parts.slice(1).join('/') || fileName}`;
+
+        // 跳过已存在的文件
+        if (existingPaths.has(absolutePath)) continue;
+
+        // 收集文件所在的所有目录层级
+        for (let i = 1; i < parts.length; i++) {
+          const subDirPath = parts.slice(0, i).join('/');
+          const fullTagName = `${rootTagName}/${subDirPath}`;
+          if (!existingTagNames.has(fullTagName)) {
+            newDirSet.add(subDirPath);
+          }
+        }
+
+        // 文件所在目录标签
+        const dirSubPath = parts.length > 1 ? parts.slice(0, parts.length - 1).join('/') : '';
+        const fileDirTag = dirSubPath ? `${rootTagName}/${dirSubPath}` : rootTagName;
+
+        newFileEntries.push({
+          name: fileName,
+          tags: [fileDirTag, dateTag],
+          path: absolutePath,
+        });
+      }
+
+      if (newFileEntries.length === 0 && newDirSet.size === 0) {
+        this.showToast('目录无新增文件和目录，已是最新状态', 'success');
+        return;
+      }
+
+      // 5. 批量创建新的目录标签（标记为自动创建）
+      const sortedDirs = Array.from(newDirSet).sort();
+      const newTagNames = sortedDirs.map((dir) => `${rootTagName}/${dir}`);
+      if (newFileEntries.length > 0) {
+        newTagNames.push(dateTag);
+      }
+      const newDirTagCount = await this.tagManager.addTagsBatch(newTagNames, { source: 'auto' });
+
+      // 6. 增量添加新文件
+      let newFileCount = 0;
+      if (newFileEntries.length > 0) {
+        newFileCount = await this.fileManager.addFileRecordsWithTags(newFileEntries, (processed, total) => {
+          const pct = Math.round((processed / total) * 100);
+          this.showToast(`正在同步 ${newFileEntries.length} 个新文件 (${pct}%)...`, 'info');
+        });
+      }
+
+      // 7. 更新 UI
+      this.expandedTags.add(rootTagName);
+
+      const parts = [];
+      if (newFileCount > 0) parts.push(`新增 ${newFileCount} 个文件`);
+      if (newDirTagCount > 0) parts.push(`新增 ${newDirTagCount} 个目录标签`);
+      this.showToast(`同步完成：${parts.join('，')}`, 'success');
+
+    } catch (err) {
+      console.error('同步目录失败:', err);
+      this.showToast(`同步目录失败: ${err.message}`, 'error');
+    }
+
     this.render();
   }
 
@@ -2695,6 +3606,20 @@ class UIController {
         const hasChildren = this.tagManager.getChildTags(tag.name).length > 0;
         const isExpanded = this.expandedTags.has(tag.name);
         const isActive = this.activeTags.has(tag.name);
+        const hasSyncDir = !!this.syncDirMappings[tag.name];
+        const isAutoTag = tag.source === 'auto';
+
+        // 同步目录标识：直接关联目录的标签显示同步图标，自动创建的子标签显示小标记
+        let syncBadge = '';
+        if (hasSyncDir) {
+          syncBadge = `<span class="tag-sync-badge" title="已关联同步目录: ${this.escapeHtml(this.syncDirMappings[tag.name])}">
+            <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+          </span>`;
+        } else if (isAutoTag) {
+          syncBadge = `<span class="tag-auto-badge" title="由目录同步自动创建">
+            <svg viewBox="0 0 24 24" width="10" height="10"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+          </span>`;
+        }
 
         html += `
           <div class="tag-tree-item" style="padding-left: ${depth * 16}px;">
@@ -2709,6 +3634,7 @@ class UIController {
               }
               <span class="tag-nav-dot" style="background: ${tagColors[tag.color % 8]}"></span>
               <span class="tag-nav-text">${this.escapeHtml(displayName)}</span>
+              ${syncBadge}
               <span class="tag-nav-count">${count}</span>
             </button>
           </div>
@@ -3165,42 +4091,16 @@ class UIController {
 
   /**
    * 获取文件的绝对路径（用于显示）
-   * 优先使用文件记录中存储的真实 path，没有时从标签推算（仅供显示参考，不可靠）
+   * 只返回文件记录中存储的真实 path，没有时返回空字符串
    */
   getFilePath(file) {
     if (!file) return '';
 
-    // 优先使用文件记录中存储的真实绝对路径
+    // 只使用文件记录中存储的真实绝对路径
     if (file.path) return file.path;
 
-    // 回退：从标签推算路径（仅供显示参考）
-    if (!file.tags) return file.name;
-
-    // 找到非日期标签中最长的路径标签（它最能表达文件的目录位置）
-    const isDateTag = (t) => /^\d{6,8}$/.test(t.split('/')[0]);
-    const dirTags = file.tags.filter((t) => !isDateTag(t));
-
-    if (dirTags.length === 0) return file.name;
-
-    // 找最深层的目录标签
-    let bestTag = '';
-    let bestDepth = -1;
-    for (const tag of dirTags) {
-      const depth = (tag.match(/\//g) || []).length;
-      if (depth > bestDepth) {
-        bestDepth = depth;
-        bestTag = tag;
-      }
-    }
-
-    // 标签路径就是目录路径，加上文件名
-    if (bestTag) {
-      // Windows 路径不以 / 开头，macOS/Linux 以 / 开头
-      const prefix = (this.platform === 'win') ? '' : '/';
-      return prefix + bestTag + '/' + file.name;
-    }
-
-    return file.name;
+    // 没有真实路径时返回空字符串（不要从标签推算虚假路径）
+    return '';
   }
 
   /**
@@ -3759,6 +4659,30 @@ class UIController {
       return;
     }
 
+    // 获取所选文件已有的标签，用于决定默认展开哪些
+    const selectedFileTags = new Set();
+    for (const fileId of this.selectedFiles) {
+      const file = this.fileManager.files.find((f) => f.id === fileId);
+      if (file && file.tags) {
+        file.tags.forEach((t) => selectedFileTags.add(t));
+      }
+    }
+
+    // 构建树形结构
+    const tagNames = allTags.map((t) => t.name);
+    const tree = this.buildTagTree(tagNames);
+
+    // 确定需要展开的路径（与选中文件相关的标签路径）
+    const expandedPaths = new Set();
+    for (const tag of selectedFileTags) {
+      const parts = tag.split('/');
+      let path = '';
+      for (const part of parts) {
+        path = path ? `${path}/${part}` : part;
+        expandedPaths.add(path);
+      }
+    }
+
     // 移除模式下添加提示区域
     const warningHtml = isRemoveMode
       ? `<div id="batch-tag-warning" class="batch-tag-warning" style="display:none;">
@@ -3767,56 +4691,118 @@ class UIController {
          </div>`
       : '';
 
-    container.innerHTML = warningHtml + allTags.map((t) => {
-      const depth = (t.name.match(/\//g) || []).length;
+    // 渲染树（传入已选中文件的标签，用于默认选中）
+    container.innerHTML = warningHtml + this.renderBatchTagTreeNodes(tree, '', expandedPaths, isRemoveMode, selectedFileTags);
+
+    // 绑定事件
+    this.bindBatchTagTreeEvents(container, expandedPaths, isRemoveMode);
+  }
+
+  /**
+   * 渲染批量标签树节点
+   * @param {Set} preSelectedTags - 需要默认选中的标签（所选文件已有的标签）
+   */
+  renderBatchTagTreeNodes(tree, parentPath, expandedPaths, isRemoveMode, preSelectedTags = new Set()) {
+    const keys = Object.keys(tree).sort((a, b) => a.localeCompare(b));
+    if (keys.length === 0) return '';
+
+    return keys.map((key) => {
+      const node = tree[key];
+      const fullPath = node.__fullPath;
+      const children = node.__children;
+      const hasChildren = Object.keys(children).length > 0;
+      const isExpanded = expandedPaths.has(fullPath);
+      const isPreSelected = preSelectedTags.has(fullPath);
+
+      const displayName = key;
+
       return `
-        <label class="tag-select-item" style="padding-left: ${8 + depth * 16}px;">
-          <input type="checkbox" value="${this.escapeHtml(t.name)}">
-          <span>${this.escapeHtml(t.name)}</span>
-        </label>
+        <div class="tag-tree-node" data-path="${this.escapeHtml(fullPath)}">
+          <div class="tag-tree-node-header${isPreSelected ? ' selected' : ''}">
+            <span class="tag-tree-node-toggle${hasChildren ? (isExpanded ? ' expanded' : '') : ' hidden'}">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+            </span>
+            <input type="checkbox" class="tag-tree-node-checkbox" value="${this.escapeHtml(fullPath)}"${isPreSelected ? ' checked' : ''}>
+            <span class="tag-tree-node-label">${this.escapeHtml(displayName)}</span>
+          </div>
+          ${hasChildren ? `<div class="tag-tree-children${isExpanded ? ' expanded' : ''}">${this.renderBatchTagTreeNodes(children, fullPath, expandedPaths, isRemoveMode, preSelectedTags)}</div>` : ''}
+        </div>
       `;
     }).join('');
+  }
 
-    // 移除模式：勾选父标签时自动勾选所有子标签并提示
-    if (isRemoveMode) {
-      container.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
-        cb.addEventListener('change', () => {
+  /**
+   * 绑定批量标签树事件
+   */
+  bindBatchTagTreeEvents(container, expandedPaths, isRemoveMode) {
+    // 折叠/展开事件
+    container.querySelectorAll('.tag-tree-node-toggle:not(.hidden)').forEach((toggle) => {
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const node = toggle.closest('.tag-tree-node');
+        const children = node.querySelector('.tag-tree-children');
+        if (children) {
+          const isExpanded = children.classList.contains('expanded');
+          children.classList.toggle('expanded', !isExpanded);
+          toggle.classList.toggle('expanded', !isExpanded);
+        }
+      });
+    });
+
+    // checkbox 事件
+    container.querySelectorAll('.tag-tree-node-checkbox').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const header = cb.closest('.tag-tree-node-header');
+        if (cb.checked) {
+          header.classList.add('selected');
+        } else {
+          header.classList.remove('selected');
+        }
+
+        // 移除模式：勾选父标签时自动勾选所有子标签
+        if (isRemoveMode) {
           const tagName = cb.value;
           const prefix = tagName + '/';
 
           if (cb.checked) {
-            // 找到所有子标签并自动勾选
-            const childCbs = [];
-            container.querySelectorAll('input[type="checkbox"]').forEach((otherCb) => {
+            container.querySelectorAll('.tag-tree-node-checkbox').forEach((otherCb) => {
               if (otherCb.value.startsWith(prefix)) {
                 otherCb.checked = true;
                 otherCb.disabled = true;
-                otherCb.closest('.tag-select-item')?.classList.add('auto-checked');
-                childCbs.push(otherCb);
+                otherCb.closest('.tag-tree-node-header')?.classList.add('auto-checked');
               }
             });
-
-            // 显示子标签数量提示
             this._updateBatchTagWarning(container);
           } else {
-            // 取消勾选时，解除所有子标签的自动勾选状态
-            container.querySelectorAll('input[type="checkbox"]').forEach((otherCb) => {
+            container.querySelectorAll('.tag-tree-node-checkbox').forEach((otherCb) => {
               if (otherCb.value.startsWith(prefix)) {
-                // 检查是否还有其他父标签选中了它
                 const stillLocked = this._isLockedByAnotherParent(container, otherCb.value, tagName);
                 if (!stillLocked) {
                   otherCb.checked = false;
                   otherCb.disabled = false;
-                  otherCb.closest('.tag-select-item')?.classList.remove('auto-checked');
+                  otherCb.closest('.tag-tree-node-header')?.classList.remove('auto-checked');
                 }
               }
             });
-
             this._updateBatchTagWarning(container);
           }
-        });
+        }
       });
-    }
+    });
+
+    // 点击整行也可以切换选中
+    container.querySelectorAll('.tag-tree-node-header').forEach((header) => {
+      header.addEventListener('click', (e) => {
+        if (e.target.closest('.tag-tree-node-toggle') || e.target.classList.contains('tag-tree-node-checkbox')) {
+          return;
+        }
+        const cb = header.querySelector('.tag-tree-node-checkbox');
+        if (!cb.disabled) {
+          cb.checked = !cb.checked;
+          cb.dispatchEvent(new Event('change'));
+        }
+      });
+    });
   }
 
   /** 检查子标签是否被其他已选中的父标签锁定 */
@@ -3837,12 +4823,12 @@ class UIController {
     if (!warning || !warningText) return;
 
     // 统计被自动勾选（因为父标签选中）的子标签数量
-    const autoChecked = container.querySelectorAll('.tag-select-item.auto-checked');
+    const autoChecked = container.querySelectorAll('.tag-tree-node-header.auto-checked');
     if (autoChecked.length > 0) {
       const parentTags = [];
-      container.querySelectorAll('input[type="checkbox"]:checked:not(:disabled)').forEach((cb) => {
+      container.querySelectorAll('.tag-tree-node-checkbox:checked:not(:disabled)').forEach((cb) => {
         // 找有子标签被自动选中的父标签
-        const hasAutoChild = container.querySelector(`.tag-select-item.auto-checked input[value^="${CSS.escape(cb.value + '/')}"]`);
+        const hasAutoChild = container.querySelector(`.tag-tree-node-header.auto-checked .tag-tree-node-checkbox[value^="${CSS.escape(cb.value + '/')}"]`);
         if (hasAutoChild) {
           parentTags.push(this.tagManager.getDisplayName(cb.value));
         }
@@ -3934,9 +4920,9 @@ class UIController {
           <div class="file-name file-name-editable" data-file-id="${file.id}" title="${this.escapeHtml(filePath || file.name)}">${this.escapeHtml(file.name)}</div>
           <div class="file-meta">
             <span class="file-time">${time}</span>
-            ${filePath ? `<span class="file-path-hint" title="${this.escapeHtml(filePath)}">${this.escapeHtml(filePath)}</span>` : ''}
+            ${filePath ? `<span class="file-path-hint" title="${this.escapeHtml(filePath)}">${this.escapeHtml(filePath)}</span>` : '<span class="file-path-hint file-path-unknown">（无真实路径）</span>'}
           </div>
-          <div class="file-details">${this.fileInfoCache[filePath] ? '' : '<span class="file-detail-loading">加载文件信息…</span>'}</div>
+          <div class="file-details">${(filePath && this.fileInfoCache[filePath]) ? '' : (filePath ? '<span class="file-detail-loading">加载文件信息…</span>' : '')}</div>
           ${tagsHtml ? `<div class="file-tags">${tagsHtml}</div>` : ''}
         </div>
         <div class="file-actions">

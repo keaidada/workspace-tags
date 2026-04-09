@@ -227,6 +227,14 @@
       <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z"/></svg>
       添加目录到此标签
     </button>
+    <button class="ctx-item" data-action="sync-dir">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+      同步目录文件
+    </button>
+    <button class="ctx-item" data-action="create-dir-structure">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+      生成目录结构
+    </button>
     <button class="ctx-item" data-action="rename">
       <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
       重命名标签
@@ -245,19 +253,12 @@
         <h3>添加文件</h3>
         <button class="modal-close" data-close="modal-add-files">&times;</button>
       </div>
-      <div class="modal-body">
-        <!-- 选择标签 -->
+      <div class="modal-body modal-body-with-footer">
+        <!-- 第一步：选择文件 -->
         <div class="form-section">
-          <h4>选择标签</h4>
-          <div id="modal-tag-select" class="tag-select-list"></div>
-          <div class="tag-input-group" style="margin-top: 10px;">
-            <input type="text" id="modal-new-tag-input" placeholder="或输入新标签名（支持 / 分层）" />
-            <button id="btn-modal-add-tag" class="btn btn-primary">新建</button>
-          </div>
-        </div>
-        <!-- 选择文件 -->
-        <div class="form-section">
-          <h4>选择文件</h4>
+          <h4>1. 选择文件</h4>
+          <!-- 文件选择器放在弹窗内，避免被 modal-overlay 阻挡 -->
+          <input type="file" id="file-picker-modal" multiple style="display:none;" />
           <div class="upload-area" id="upload-area">
             <svg viewBox="0 0 24 24" width="32" height="32">
               <path fill="currentColor" opacity="0.4" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/>
@@ -281,10 +282,19 @@
           </div>
           <div id="pending-files-list" class="pending-files-list"></div>
         </div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" data-close="modal-add-files">取消</button>
-          <button class="btn btn-primary" id="btn-confirm-add-files">确认添加</button>
+        <!-- 第二步：选择标签 -->
+        <div class="form-section">
+          <h4>2. 选择标签</h4>
+          <div id="modal-tag-select" class="tag-select-tree"></div>
+          <div class="tag-input-group" style="margin-top: 10px;">
+            <input type="text" id="modal-new-tag-input" placeholder="或输入新标签名（支持 / 分层）" />
+            <button id="btn-modal-add-tag" class="btn btn-primary">新建</button>
+          </div>
         </div>
+      </div>
+      <div class="modal-footer-fixed">
+        <button class="btn btn-secondary" data-close="modal-add-files">取消</button>
+        <button class="btn btn-primary" id="btn-confirm-add-files">确认添加</button>
       </div>
     </div>
   </div>
@@ -307,6 +317,35 @@
           <div class="add-dir-manual">
             <input type="text" id="dir-manual-input" placeholder="输入目录路径，如 /Users/xxx/documents/" />
             <button class="btn btn-primary" id="btn-dir-manual-confirm">确认导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 生成目录结构弹窗 -->
+  <div class="modal-overlay" id="modal-create-dir" style="display:none;">
+    <div class="modal modal-small">
+      <div class="modal-header">
+        <h3>生成目录结构</h3>
+        <button class="modal-close" data-close="modal-create-dir">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint" id="create-dir-hint">将按标签层级在本地创建目录</p>
+        <div class="create-dir-preview" id="create-dir-preview"></div>
+        <label class="create-dir-keep-source" style="display:flex;align-items:center;gap:6px;margin:10px 0;cursor:pointer;font-size:13px;color:var(--text-secondary);">
+          <input type="checkbox" id="create-dir-keep-source" checked />
+          <span>保留源文件（复制而非移动）</span>
+        </label>
+        <div class="add-dir-options">
+          <button class="btn btn-secondary add-dir-option" id="btn-create-dir-browse">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+            选择目录
+          </button>
+          <div class="add-dir-divider"><span>或</span></div>
+          <div class="add-dir-manual">
+            <input type="text" id="create-dir-manual-input" placeholder="输入基础路径，如 /Users/xxx/projects/" />
+            <button class="btn btn-primary" id="btn-create-dir-confirm">生成</button>
           </div>
         </div>
       </div>
@@ -371,11 +410,11 @@
         <h3>管理文件标签</h3>
         <button class="modal-close" data-close="modal-file-tags">&times;</button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body modal-body-with-footer">
         <p class="modal-file-name" id="modal-file-tags-filename"></p>
         <div class="file-tags-tree-wrap" id="file-tags-tree"></div>
       </div>
-      <div class="modal-footer">
+      <div class="modal-footer-fixed">
         <button class="btn btn-primary" id="btn-save-file-tags">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
           确认
@@ -391,15 +430,15 @@
         <h3 id="batch-tag-modal-title">批量操作标签</h3>
         <button class="modal-close" data-close="modal-batch-tag">&times;</button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body modal-body-with-footer">
         <div class="form-section">
           <h4>选择标签</h4>
-          <div id="batch-tag-select" class="tag-select-list"></div>
+          <div id="batch-tag-select" class="tag-select-tree"></div>
         </div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" data-close="modal-batch-tag">取消</button>
-          <button class="btn btn-primary" id="btn-confirm-batch-tag">确认</button>
-        </div>
+      </div>
+      <div class="modal-footer-fixed">
+        <button class="btn btn-secondary" data-close="modal-batch-tag">取消</button>
+        <button class="btn btn-primary" id="btn-confirm-batch-tag">确认</button>
       </div>
     </div>
   </div>
@@ -411,7 +450,7 @@
         <h3>清理失效文件</h3>
         <button class="modal-close" data-close="modal-cleanup">&times;</button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body modal-body-with-footer">
         <p class="modal-hint" id="cleanup-count">检测中...</p>
         <p class="cleanup-hint-sub">以下文件在磁盘上已不存在，选中的文件将移入回收站</p>
         <div class="cleanup-toolbar">
@@ -419,13 +458,13 @@
           <button class="btn btn-sm btn-secondary" id="btn-cleanup-select-all">全选/取消</button>
         </div>
         <div class="cleanup-list-wrap" id="cleanup-file-list"></div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" data-close="modal-cleanup">取消</button>
-          <button class="btn btn-danger" id="btn-confirm-cleanup">
-            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-            移入回收站
-          </button>
-        </div>
+      </div>
+      <div class="modal-footer-fixed">
+        <button class="btn btn-secondary" data-close="modal-cleanup">取消</button>
+        <button class="btn btn-danger" id="btn-confirm-cleanup">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+          移入回收站
+        </button>
       </div>
     </div>
   </div>
@@ -479,6 +518,23 @@
         </div>
         <div class="trash-list-wrap" id="trash-file-list">
           <div class="trash-empty">回收站为空</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 移动/复制失败详情弹窗 -->
+  <div class="modal-overlay" id="modal-move-errors" style="display:none;">
+    <div class="modal" style="max-width: 560px;">
+      <div class="modal-header">
+        <h3 id="move-errors-title">文件操作失败</h3>
+        <button class="modal-close" data-close="modal-move-errors">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="move-errors-summary" class="modal-hint"></p>
+        <div class="move-errors-list" id="move-errors-list"></div>
+        <div class="modal-actions" style="margin-top: 16px;">
+          <button class="btn btn-primary" data-close="modal-move-errors">知道了</button>
         </div>
       </div>
     </div>

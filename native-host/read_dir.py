@@ -6,6 +6,7 @@ Workspace Tags - Native Messaging Host
 
 import json
 import os
+import shutil
 import struct
 import sys
 
@@ -69,24 +70,45 @@ def list_directory(dir_path):
     return {"files": files, "rootName": root_name, "totalCount": len(files)}
 
 
-def list_directory_paged(dir_path, page=0, page_size=5000):
+def list_directory_paged(dir_path, page=0, page_size=5000, create_if_not_exists=False):
     """
     分页版目录遍历。先完整扫描，然后按页返回文件列表。
     每页最多 page_size 个文件，确保单条消息不超过 Chrome 1MB 限制。
-    返回: {files, rootName, totalCount, page, totalPages, absolutePath}
+    返回: {files, dirs, rootName, totalCount, page, totalPages, absolutePath, created}
+    - files: 文件的相对路径列表（分页）
+    - dirs: 所有子目录的相对路径列表（不分页，仅在 page=0 时返回）
+    - created: 如果目录是新创建的，返回 True
     """
     dir_path = os.path.expanduser(dir_path)
     dir_path = os.path.abspath(dir_path)
+    
+    created = False
 
     if not os.path.isdir(dir_path):
-        return {"error": f"路径不存在或不是目录: {dir_path}"}
+        if create_if_not_exists:
+            try:
+                os.makedirs(dir_path, exist_ok=True)
+                created = True
+            except PermissionError as e:
+                return {"error": f"无权限创建目录: {str(e)}"}
+            except Exception as e:
+                return {"error": f"创建目录失败: {str(e)}"}
+        else:
+            return {"error": f"路径不存在或不是目录: {dir_path}"}
 
     root_name = os.path.basename(dir_path)
     all_files = []
+    all_dirs = []
 
     try:
         for dp, dirnames, filenames in os.walk(dir_path):
             dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            # 收集子目录（相对于上级目录的路径，与文件路径格式一致）
+            for dirname in dirnames:
+                full_dir = os.path.join(dp, dirname)
+                rel_dir = os.path.relpath(full_dir, os.path.dirname(dir_path))
+                rel_dir = rel_dir.replace(os.sep, '/')
+                all_dirs.append(rel_dir)
             for filename in filenames:
                 if filename.startswith('.'):
                     continue
@@ -105,14 +127,21 @@ def list_directory_paged(dir_path, page=0, page_size=5000):
     start = page * page_size
     end = min(start + page_size, total_count)
 
-    return {
+    result = {
         "files": all_files[start:end],
         "rootName": root_name,
         "totalCount": total_count,
         "page": page,
         "totalPages": total_pages,
         "absolutePath": dir_path,
+        "created": created,
     }
+
+    # 仅在第一页返回完整目录列表（避免重复传输）
+    if page == 0:
+        result["dirs"] = all_dirs
+
+    return result
 
 
 def open_file(file_path):
@@ -757,6 +786,110 @@ def choose_and_list_directory():
     return list_result
 
 
+def choose_files():
+    """
+    调用系统原生文件选择对话框，返回用户选择的文件的绝对路径列表。
+    支持多选。
+    macOS: 使用 osascript。
+    Windows: 使用 tkinter。
+    Linux: 使用 zenity。
+    """
+    import subprocess
+    import platform
+    import tempfile
+
+    system = platform.system()
+
+    try:
+        if system == 'Darwin':
+            # macOS: 使用 osascript 弹出文件选择（支持多选）
+            try:
+                script = '''
+set chosenFiles to choose file with prompt "选择要添加的文件" with multiple selections allowed
+set fileList to ""
+repeat with aFile in chosenFiles
+    set fileList to fileList & POSIX path of aFile & linefeed
+end repeat
+return fileList
+'''
+                result = subprocess.run(
+                    ['osascript', '-e', script],
+                    capture_output=True, text=True, timeout=120
+                )
+                if result.returncode == 0:
+                    paths = [p.strip() for p in result.stdout.strip().split('\n') if p.strip()]
+                    return {"files": paths}
+                # 用户取消返回 -128 错误
+                if '-128' in result.stderr:
+                    return {"cancelled": True}
+                return {"error": f"选择文件失败: {result.stderr}"}
+            except subprocess.TimeoutExpired:
+                return {"error": "选择超时"}
+            except Exception as e:
+                return {"error": f"选择文件失败: {str(e)}"}
+
+        elif system == 'Windows':
+            # Windows: 使用 tkinter（支持多选）
+            try:
+                picker_script = '''import tkinter as tk
+from tkinter import filedialog
+root = tk.Tk()
+root.withdraw()
+root.attributes('-topmost', True)
+root.update()
+files = filedialog.askopenfilenames(title="选择要添加的文件")
+root.destroy()
+if files:
+    for f in files:
+        print(f)
+else:
+    print("__CANCELLED__")
+'''
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
+                    f.write(picker_script)
+                    tmp_script = f.name
+
+                result = subprocess.run(
+                    [sys.executable, tmp_script],
+                    capture_output=True, text=True, timeout=120
+                )
+                os.unlink(tmp_script)
+
+                if result.returncode == 0:
+                    output = result.stdout.strip()
+                    if output == '__CANCELLED__':
+                        return {"cancelled": True}
+                    paths = [p.strip().replace('/', '\\') for p in output.split('\n') if p.strip()]
+                    return {"files": paths}
+                else:
+                    return {"error": f"选择文件失败: {result.stderr.strip()}"}
+            except subprocess.TimeoutExpired:
+                return {"error": "选择超时"}
+            except Exception as e:
+                return {"error": f"选择文件失败: {str(e)}"}
+
+        else:
+            # Linux: 使用 zenity（支持多选）
+            try:
+                result = subprocess.run(
+                    ['zenity', '--file-selection', '--multiple', '--separator=\n', '--title=选择文件'],
+                    capture_output=True, text=True, timeout=120
+                )
+                if result.returncode != 0:
+                    return {"cancelled": True}
+                paths = [p.strip() for p in result.stdout.strip().split('\n') if p.strip()]
+                return {"files": paths}
+            except subprocess.TimeoutExpired:
+                return {"error": "选择超时"}
+            except FileNotFoundError:
+                return {"error": "zenity 未安装"}
+            except Exception as e:
+                return {"error": f"选择文件失败: {str(e)}"}
+
+    except Exception as e:
+        return {"error": f"选择文件失败: {str(e)}"}
+
+
 def get_file_info(file_path):
     """获取单个文件的详细信息（大小、创建时间、修改时间、文件类型等）"""
     import time as _time
@@ -966,6 +1099,149 @@ def list_installed_apps():
     return {'apps': unique_apps}
 
 
+def create_dir_structure(base_path, tag_paths, file_moves=None, keep_source=False):
+    """
+    根据标签路径列表，在 base_path 下创建对应的目录结构，并可选地移动/复制文件。
+    tag_paths: ["Hadoop", "Hadoop/配置", "Hadoop/部署", ...]
+    file_moves: [{"src": "/old/path/file.txt", "destDir": "Hadoop/配置"}, ...]
+    keep_source: True 时复制文件（保留源文件），False 时移动文件
+    返回: {created: [...], skipped: [...], errors: [...], movedFiles: [...], moveErrors: [...]}
+    """
+    sys.stderr.write(f"[createDirStructure] base_path={base_path}, tag_paths={tag_paths}, file_moves_count={len(file_moves) if file_moves else 0}, keep_source={keep_source}\n")
+    sys.stderr.flush()
+
+    base_path = os.path.expanduser(base_path)
+    base_path = os.path.abspath(base_path)
+
+    if not os.path.isdir(base_path):
+        try:
+            os.makedirs(base_path, exist_ok=True)
+        except Exception as e:
+            return {"error": f"基础路径不存在且无法创建: {base_path} ({e})"}
+
+    created = []
+    skipped = []
+    errors = []
+
+    for tag_path in tag_paths:
+        # 安全校验：禁止路径遍历
+        if '..' in tag_path.split('/') or '\0' in tag_path:
+            errors.append({"path": tag_path, "error": "路径不合法"})
+            continue
+
+        dir_path = os.path.join(base_path, tag_path.replace('/', os.sep))
+
+        # 安全校验：确保目标路径仍在 base_path 下
+        if not os.path.abspath(dir_path).startswith(os.path.abspath(base_path) + os.sep) and os.path.abspath(dir_path) != os.path.abspath(base_path):
+            errors.append({"path": tag_path, "error": "路径超出基础目录范围"})
+            continue
+
+        if os.path.exists(dir_path):
+            skipped.append(tag_path)
+        else:
+            try:
+                os.makedirs(dir_path, exist_ok=True)
+                created.append(tag_path)
+            except PermissionError:
+                errors.append({"path": tag_path, "error": "权限不足"})
+            except Exception as e:
+                errors.append({"path": tag_path, "error": str(e)})
+
+    # 移动文件
+    moved_files = []
+    move_errors = []
+
+    if file_moves:
+        for item in file_moves:
+            src = item.get('src', '')
+            dest_dir_rel = item.get('destDir', '')
+
+            if not src or not dest_dir_rel:
+                continue
+
+            src = os.path.expanduser(src)
+            src = os.path.abspath(src)
+
+            if not os.path.exists(src):
+                move_errors.append({"src": src, "error": "源文件不存在"})
+                continue
+
+            # 检测特殊文件类型（socket、管道等无法正常移动的文件）
+            try:
+                src_stat = os.lstat(src)
+                import stat as stat_mod
+                if stat_mod.S_ISSOCK(src_stat.st_mode):
+                    move_errors.append({"src": src, "error": "Socket 文件无法移动"})
+                    continue
+                if stat_mod.S_ISFIFO(src_stat.st_mode):
+                    move_errors.append({"src": src, "error": "管道文件无法移动"})
+                    continue
+                if stat_mod.S_ISBLK(src_stat.st_mode) or stat_mod.S_ISCHR(src_stat.st_mode):
+                    move_errors.append({"src": src, "error": "设备文件无法移动"})
+                    continue
+            except Exception:
+                pass
+
+            dest_dir = os.path.join(base_path, dest_dir_rel.replace('/', os.sep))
+            dest_dir = os.path.abspath(dest_dir)
+
+            # 安全校验
+            if not dest_dir.startswith(os.path.abspath(base_path) + os.sep) and dest_dir != os.path.abspath(base_path):
+                move_errors.append({"src": src, "error": "目标路径超出基础目录范围"})
+                continue
+
+            file_name = os.path.basename(src)
+            dest_path = os.path.join(dest_dir, file_name)
+
+            # 如果目标已存在同名文件，跳过
+            if os.path.exists(dest_path):
+                # 如果源和目标相同，也算成功（路径不变）
+                if os.path.abspath(src) == os.path.abspath(dest_path):
+                    moved_files.append({"src": src, "dest": dest_path})
+                else:
+                    move_errors.append({"src": src, "error": f"目标已存在同名文件: {dest_path}"})
+                continue
+
+            # 确保目标目录存在
+            os.makedirs(dest_dir, exist_ok=True)
+
+            try:
+                if keep_source:
+                    shutil.copy2(src, dest_path)
+                else:
+                    shutil.move(src, dest_path)
+                moved_files.append({"src": src, "dest": dest_path})
+            except PermissionError:
+                if not keep_source:
+                    # 移动失败时自动降级为复制（源文件受保护无法删除，但可以读取并复制）
+                    try:
+                        shutil.copy2(src, dest_path)
+                        moved_files.append({"src": src, "dest": dest_path, "fallback_copy": True})
+                        sys.stderr.write(f"[createDirStructure] move failed for {src}, fallback to copy\n")
+                        sys.stderr.flush()
+                    except Exception as copy_err:
+                        move_errors.append({"src": src, "error": f"移动权限不足，复制也失败: {copy_err}"})
+                else:
+                    move_errors.append({"src": src, "error": "权限不足"})
+            except Exception as e:
+                move_errors.append({"src": src, "error": str(e)})
+
+    sys.stderr.write(f"[createDirStructure] result: created={len(created)}, skipped={len(skipped)}, errors={len(errors)}, moved={len(moved_files)}, move_errors={len(move_errors)}\n")
+    if errors:
+        sys.stderr.write(f"[createDirStructure] dir errors: {errors}\n")
+    if move_errors:
+        sys.stderr.write(f"[createDirStructure] move errors: {move_errors}\n")
+    sys.stderr.flush()
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "errors": errors,
+        "movedFiles": moved_files,
+        "moveErrors": move_errors,
+    }
+
+
 def main():
     while True:
         try:
@@ -975,64 +1251,84 @@ def main():
 
         action = message.get('action', '')
 
-        if action == 'listDir':
-            dir_path = message.get('path', '')
-            result = list_directory(dir_path)
-            send_message(result)
-        elif action == 'listDirPaged':
-            dir_path = message.get('path', '')
-            page = message.get('page', 0)
-            result = list_directory_paged(dir_path, page=page)
-            send_message(result)
-        elif action == 'chooseDirectory':
-            # 弹出系统原生目录选择对话框
-            result = choose_directory()
-            send_message(result)
-        elif action == 'chooseAndListDir':
-            # 弹出目录选择 + 列出文件
-            result = choose_and_list_directory()
-            send_message(result)
-        elif action == 'openFile':
-            file_path = message.get('path', '')
-            app = message.get('app', '')
-            if app:
-                result = open_file_with(file_path, app)
+        try:
+            if action == 'listDir':
+                dir_path = message.get('path', '')
+                result = list_directory(dir_path)
+                send_message(result)
+            elif action == 'listDirPaged':
+                dir_path = message.get('path', '')
+                page = message.get('page', 0)
+                create_if_not_exists = message.get('createIfNotExists', False)
+                result = list_directory_paged(dir_path, page=page, create_if_not_exists=create_if_not_exists)
+                send_message(result)
+            elif action == 'chooseDirectory':
+                # 弹出系统原生目录选择对话框
+                result = choose_directory()
+                send_message(result)
+            elif action == 'chooseAndListDir':
+                # 弹出目录选择 + 列出文件
+                result = choose_and_list_directory()
+                send_message(result)
+            elif action == 'chooseFiles':
+                # 弹出文件选择对话框（支持多选），返回文件的绝对路径列表
+                result = choose_files()
+                send_message(result)
+            elif action == 'openFile':
+                file_path = message.get('path', '')
+                app = message.get('app', '')
+                if app:
+                    result = open_file_with(file_path, app)
+                else:
+                    result = open_file(file_path)
+                send_message(result)
+            elif action == 'readFile':
+                file_path = message.get('path', '')
+                result = read_text_file(file_path)
+                send_message(result)
+            elif action == 'revealInFinder':
+                file_path = message.get('path', '')
+                result = reveal_in_finder(file_path)
+                send_message(result)
+            elif action == 'ping':
+                send_message({"status": "ok", "version": "1.0.0"})
+            elif action == 'listApps':
+                result = list_installed_apps()
+                send_message(result)
+            elif action == 'openTerminal':
+                dir_path = message.get('path', '')
+                app = message.get('app', '')
+                result = open_terminal_at(dir_path, app)
+                send_message(result)
+            elif action == 'getFileInfo':
+                file_path = message.get('path', '')
+                result = get_file_info(file_path)
+                send_message(result)
+            elif action == 'batchGetFileInfo':
+                paths = message.get('paths', [])
+                result = batch_get_file_info(paths)
+                send_message(result)
+            elif action == 'renameFile':
+                old_path = message.get('oldPath', '')
+                new_name = message.get('newName', '')
+                result = rename_file(old_path, new_name)
+                send_message(result)
+            elif action == 'createDirStructure':
+                base_path = message.get('basePath', '')
+                tag_paths = message.get('tagPaths', [])
+                file_moves = message.get('fileMoves', None)
+                keep_source = message.get('keepSource', False)
+                result = create_dir_structure(base_path, tag_paths, file_moves, keep_source)
+                send_message(result)
             else:
-                result = open_file(file_path)
-            send_message(result)
-        elif action == 'readFile':
-            file_path = message.get('path', '')
-            result = read_text_file(file_path)
-            send_message(result)
-        elif action == 'revealInFinder':
-            file_path = message.get('path', '')
-            result = reveal_in_finder(file_path)
-            send_message(result)
-        elif action == 'ping':
-            send_message({"status": "ok", "version": "1.0.0"})
-        elif action == 'listApps':
-            result = list_installed_apps()
-            send_message(result)
-        elif action == 'openTerminal':
-            dir_path = message.get('path', '')
-            app = message.get('app', '')
-            result = open_terminal_at(dir_path, app)
-            send_message(result)
-        elif action == 'getFileInfo':
-            file_path = message.get('path', '')
-            result = get_file_info(file_path)
-            send_message(result)
-        elif action == 'batchGetFileInfo':
-            paths = message.get('paths', [])
-            result = batch_get_file_info(paths)
-            send_message(result)
-        elif action == 'renameFile':
-            old_path = message.get('oldPath', '')
-            new_name = message.get('newName', '')
-            result = rename_file(old_path, new_name)
-            send_message(result)
-        else:
-            send_message({"error": f"未知操作: {action}"})
+                send_message({"error": f"未知操作: {action}"})
+        except Exception as e:
+            sys.stderr.write(f"[NativeHost] Unhandled error in action '{action}': {e}\n")
+            sys.stderr.flush()
+            try:
+                send_message({"error": f"内部错误 ({action}): {str(e)}"})
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':

@@ -1042,6 +1042,12 @@ html, body {
   color: var(--primary);
 }
 
+.file-path-hint.file-path-unknown {
+  font-style: italic;
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* 文件详情信息 */
 .file-details {
   display: flex;
@@ -1685,6 +1691,7 @@ html, body {
 }
 
 .modal {
+  position: relative;
   background: var(--bg);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
@@ -1748,6 +1755,29 @@ html, body {
 .modal-body {
   padding: 20px 24px;
   overflow-y: auto;
+}
+
+/* 带有固定底部按钮的 modal-body */
+.modal-body-with-footer {
+  padding: 20px 24px;
+  padding-bottom: 80px; /* 为固定底部按钮留出空间 */
+  overflow-y: auto;
+  max-height: calc(80vh - 60px); /* 减去 header 高度 */
+}
+
+/* 固定在底部的操作按钮 */
+.modal-footer-fixed {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 16px 24px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
 .modal-footer {
@@ -1825,6 +1855,65 @@ html, body {
   margin-top: 20px;
 }
 
+/* 移动失败详情列表 */
+.move-errors-list {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 12px;
+}
+
+.move-error-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.move-error-item:last-child {
+  border-bottom: none;
+}
+
+.move-error-item .error-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: #ef4444;
+}
+
+.move-error-item .error-icon.warn {
+  color: #f59e0b;
+}
+
+.move-error-item .error-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.move-error-item .error-filename {
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.move-error-item .error-path {
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-all;
+  margin-top: 2px;
+}
+
+.move-error-item .error-reason {
+  font-size: 12px;
+  color: #ef4444;
+  margin-top: 4px;
+}
+
 .no-tags-hint {
   text-align: center;
   padding: 16px;
@@ -1855,13 +1944,93 @@ html, body {
   padding: 4px;
 }
 
+/* 标签选择树（带折叠功能） */
+.tag-select-tree {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px;
+}
+
+.tag-select-tree::-webkit-scrollbar,
 .tag-select-list::-webkit-scrollbar {
   width: 4px;
 }
 
+.tag-select-tree::-webkit-scrollbar-thumb,
 .tag-select-list::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 2px;
+}
+
+/* 标签树节点 */
+.tag-tree-node {
+  user-select: none;
+}
+
+.tag-tree-node-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.tag-tree-node-header:hover {
+  background: var(--bg-hover);
+}
+
+.tag-tree-node-toggle {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.tag-tree-node-toggle.expanded {
+  transform: rotate(90deg);
+}
+
+.tag-tree-node-toggle.hidden {
+  visibility: hidden;
+}
+
+.tag-tree-node-checkbox {
+  accent-color: var(--primary);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tag-tree-node-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-tree-node-header.selected .tag-tree-node-label {
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.tag-tree-children {
+  margin-left: 20px;
+  display: none;
+}
+
+.tag-tree-children.expanded {
+  display: block;
 }
 
 .tag-select-item {
@@ -2030,6 +2199,25 @@ html, body {
 }
 
 /* 添加目录弹窗 */
+.create-dir-preview {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 0;
+  margin-bottom: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.create-dir-tree-item {
+  padding: 3px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
 .add-dir-options {
   display: flex;
   flex-direction: column;
@@ -2723,4 +2911,52 @@ html, body {
   .file-grid-container {
     padding: 16px;
   }
+}
+
+/* ==========================================
+   同步目录标识
+   ========================================== */
+.tag-sync-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
+  flex-shrink: 0;
+  transition: all var(--transition);
+  cursor: help;
+}
+
+.tag-sync-badge:hover {
+  background: rgba(16, 185, 129, 0.25);
+  transform: rotate(180deg);
+}
+
+.tag-auto-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--primary);
+  flex-shrink: 0;
+  opacity: 0.6;
+  cursor: help;
+}
+
+.tag-auto-badge:hover {
+  opacity: 1;
+}
+
+.tag-nav-item.active .tag-sync-badge {
+  background: rgba(16, 185, 129, 0.2);
+}
+
+.tag-nav-item.active .tag-auto-badge {
+  opacity: 0.8;
 }
