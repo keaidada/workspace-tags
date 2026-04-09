@@ -2275,6 +2275,239 @@ html, body {
 }
 
 /* ==========================================
+   Cleanup & Trash
+   ========================================== */
+
+/* 居中进度浮层 */
+.progress-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  z-index: 300;
+  pointer-events: all;
+}
+
+.progress-box {
+  background: #1a1a2e;
+  border-radius: 16px;
+  padding: 32px 52px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  text-align: center;
+  min-width: 260px;
+}
+
+.progress-text {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+}
+
+/* 回收站链接 */
+.trash-link {
+  cursor: pointer;
+  transition: color var(--transition);
+}
+
+.trash-link:hover {
+  color: var(--primary);
+}
+
+.trash-link.has-items {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* 宽模态框 */
+.modal-wide {
+  width: 600px;
+}
+
+/* 清理弹窗 */
+.cleanup-hint-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.cleanup-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.cleanup-list-wrap {
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  scrollbar-width: thin;
+}
+
+.cleanup-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-light);
+  transition: background var(--transition);
+}
+
+.cleanup-item:last-child {
+  border-bottom: none;
+}
+
+.cleanup-item:hover {
+  background: var(--bg-hover);
+}
+
+.cleanup-item input[type="checkbox"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.cleanup-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.cleanup-item-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cleanup-item-path {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.cleanup-item-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.cleanup-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 10px;
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+/* 回收站弹窗 */
+.trash-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.trash-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.trash-list-wrap {
+  max-height: 450px;
+  overflow-y: auto;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  scrollbar-width: thin;
+}
+
+.trash-empty {
+  text-align: center;
+  padding: 32px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.trash-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-light);
+  transition: background var(--transition);
+}
+
+.trash-item:last-child {
+  border-bottom: none;
+}
+
+.trash-item:hover {
+  background: var(--bg-hover);
+}
+
+.trash-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.trash-item-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trash-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+}
+
+.trash-item-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.trash-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.trash-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-light);
+}
+
+/* ==========================================
    Pagination
    ========================================== */
 .pagination-bar {
@@ -2282,10 +2515,13 @@ html, body {
   align-items: center;
   justify-content: center;
   gap: 16px;
-  padding: 16px 0 8px;
+  padding: 10px 20px;
   flex-wrap: wrap;
   border-top: 1px solid var(--border);
-  margin-top: 16px;
+  background: var(--bg-primary);
+  flex-shrink: 0;
+  z-index: 10;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.04);
 }
 
 .pagination-info {

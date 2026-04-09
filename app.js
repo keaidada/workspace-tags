@@ -49,6 +49,8 @@ class StorageService {
   static async saveTags(tags) { return this.set('tags', tags); }
   static async getSortOrder() { return this.get('sortOrder', 'desc'); }
   static async saveSortOrder(v) { return this.set('sortOrder', v); }
+  static async getTrash() { return this.get('trash', []); }
+  static async saveTrash(trash) { return this.set('trash', trash); }
 }
 
 // ==========================================
@@ -219,6 +221,7 @@ class TagManager {
 class FileManager {
   constructor(tagManager) {
     this.files = [];
+    this.trash = []; // 回收站：[{...fileRecord, deletedTime: timestamp}]
     this.tagManager = tagManager;
     this._tagFileCountsCache = null;
   }
@@ -230,6 +233,7 @@ class FileManager {
 
   async load() {
     this.files = await StorageService.getFiles();
+    this.trash = await StorageService.getTrash();
     this._invalidateCountsCache();
   }
 
@@ -358,8 +362,7 @@ class FileManager {
   }
 
   async removeFile(fileId) {
-    this.files = this.files.filter((f) => f.id !== fileId);
-    await this.save();
+    await this.moveToTrash(fileId);
   }
 
   async addTagToFile(fileId, tagName) {
@@ -484,6 +487,88 @@ class FileManager {
     this._tagFileCountsCache = counts;
     return counts;
   }
+
+  // ==========================================
+  // 回收站相关方法
+  // ==========================================
+
+  async saveTrash() {
+    try {
+      await StorageService.saveTrash(this.trash);
+    } catch (err) {
+      console.error('保存回收站数据失败:', err);
+      throw err;
+    }
+  }
+
+  /** 将文件移入回收站（保留所有原始信息 + 删除时间） */
+  async moveToTrash(fileId) {
+    const idx = this.files.findIndex((f) => f.id === fileId);
+    if (idx === -1) return;
+    const file = this.files[idx];
+    this.trash.push({ ...file, deletedTime: Date.now() });
+    this.files.splice(idx, 1);
+    await this.save();
+    await this.saveTrash();
+  }
+
+  /** 批量移入回收站 */
+  async moveToTrashBatch(fileIds) {
+    const idSet = new Set(fileIds);
+    const now = Date.now();
+    const toRemove = this.files.filter((f) => idSet.has(f.id));
+    toRemove.forEach((f) => this.trash.push({ ...f, deletedTime: now }));
+    this.files = this.files.filter((f) => !idSet.has(f.id));
+    if (toRemove.length > 0) {
+      await this.save();
+      await this.saveTrash();
+    }
+    return toRemove.length;
+  }
+
+  /** 从回收站恢复单个文件 */
+  async restoreFromTrash(fileId) {
+    const idx = this.trash.findIndex((f) => f.id === fileId);
+    if (idx === -1) return;
+    const file = { ...this.trash[idx] };
+    delete file.deletedTime;
+    this.files.push(file);
+    this.trash.splice(idx, 1);
+    await this.save();
+    await this.saveTrash();
+  }
+
+  /** 从回收站恢复全部 */
+  async restoreAllFromTrash() {
+    if (this.trash.length === 0) return;
+    this.trash.forEach((f) => {
+      const file = { ...f };
+      delete file.deletedTime;
+      this.files.push(file);
+    });
+    this.trash = [];
+    await this.save();
+    await this.saveTrash();
+  }
+
+  /** 从回收站永久删除单个 */
+  async deleteFromTrash(fileId) {
+    this.trash = this.trash.filter((f) => f.id !== fileId);
+    await this.saveTrash();
+  }
+
+  /** 清空回收站（真正永久删除所有数据关系） */
+  async emptyTrash() {
+    const count = this.trash.length;
+    this.trash = [];
+    await this.saveTrash();
+    return count;
+  }
+
+  /** 获取回收站列表 */
+  getTrashFiles() {
+    return this.trash.sort((a, b) => (b.deletedTime || 0) - (a.deletedTime || 0));
+  }
 }
 
 // ==========================================
@@ -535,6 +620,10 @@ class UIController {
     // 分页
     this.currentPage = 1;
     this.pageSize = 500;
+
+    // 回收站分页
+    this.trashCurrentPage = 1;
+    this.trashPageSize = 50;
   }
 
   async init() {
@@ -1100,6 +1189,15 @@ class UIController {
         this.renderSidebar();
       });
     });
+
+    // --- 清理失效文件 & 回收站 ---
+    document.getElementById('btn-cleanup-files')?.addEventListener('click', () => this.showCleanupModal());
+    document.getElementById('btn-open-trash')?.addEventListener('click', () => this.showTrashModal());
+    document.getElementById('trash-count')?.addEventListener('click', () => this.showTrashModal());
+    document.getElementById('btn-cleanup-select-all')?.addEventListener('click', () => this.toggleCleanupSelectAll());
+    document.getElementById('btn-confirm-cleanup')?.addEventListener('click', () => this.confirmCleanup());
+    document.getElementById('btn-empty-trash')?.addEventListener('click', () => this.emptyTrash());
+    document.getElementById('btn-restore-all')?.addEventListener('click', () => this.restoreAllFromTrash());
   }
 
   // ==========================================
@@ -1856,7 +1954,8 @@ class UIController {
               const parts = relPath.split('/');
               const fileName = parts[parts.length - 1];
               const dirPath = parts.length > 1 ? parts.slice(0, parts.length - 1).join('/') : '';
-              const fullPath = `${cleanPath}/${relPath}`;
+              // parts[0] 是根目录名（与 cleanPath 末段重复），用 slice(1) 去掉
+              const fullPath = `${cleanPath}/${parts.slice(1).join('/') || fileName}`;
 
               if (!this.pendingFileNames.some((f) => f.fullPath === fullPath)) {
                 this.pendingFileNames.push({ name: fileName, dirPath, fullPath });
@@ -1977,9 +2076,10 @@ class UIController {
         // 构建文件的标签列表：父标签/目录路径 + 日期标签
         const fileDirTag = dirPath ? `${tagName}/${dirPath}` : tagName;
 
-        // 真实绝对路径 = 用户输入的目录路径 + / + 相对路径
+        // 真实绝对路径 = 用户输入的目录路径 + / + 去掉根目录名后的相对路径
+        // relPath 格式是 "rootDir/subDir/file.txt"，parts[0] 就是根目录名，需要跳过
         const cleanBase = rawPath.replace(/\/+$/, '');
-        const absolutePath = `${cleanBase}/${relPath}`;
+        const absolutePath = `${cleanBase}/${parts.slice(1).join('/') || fileName}`;
 
         fileEntries.push({
           name: fileName,
@@ -2892,7 +2992,7 @@ class UIController {
         const fileId = btn.getAttribute('data-id');
         await this.fileManager.removeFile(fileId);
         this.selectedFiles.delete(fileId);
-        this.showToast('文件记录已移除', 'info');
+        this.showToast('已移入回收站', 'info');
         this.render();
       });
     });
@@ -3341,13 +3441,9 @@ class UIController {
 
   async batchRemoveFiles() {
     if (this.selectedFiles.size === 0) return;
-
-    const count = this.selectedFiles.size;
-    for (const fileId of this.selectedFiles) {
-      await this.fileManager.removeFile(fileId);
-    }
+    const count = await this.fileManager.moveToTrashBatch(this.selectedFiles);
     this.selectedFiles.clear();
-    this.showToast(`已移除 ${count} 个文件记录`, 'info');
+    this.showToast(`已将 ${count} 个文件移入回收站`, 'info');
     this.render();
   }
 
@@ -3717,6 +3813,12 @@ class UIController {
   renderFooter() {
     document.getElementById('file-count').textContent = `${this.fileManager.files.length} 个文件`;
     document.getElementById('tag-count').textContent = `${this.tagManager.getAllTags().length} 个标签`;
+    const trashCountEl = document.getElementById('trash-count');
+    if (trashCountEl) {
+      const trashLen = this.fileManager.trash.length;
+      trashCountEl.textContent = trashLen > 0 ? `回收站(${trashLen})` : '回收站';
+      trashCountEl.classList.toggle('has-items', trashLen > 0);
+    }
   }
 
   // ==========================================
@@ -3876,6 +3978,264 @@ class UIController {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  // ==========================================
+  // 清理失效文件 & 回收站
+  // ==========================================
+
+  /** 显示/更新/隐藏居中进度浮层 */
+  _showProgress(text) {
+    let overlay = document.getElementById('cleanup-progress-overlay');
+    if (!text) {
+      if (overlay) overlay.remove();
+      return;
+    }
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'cleanup-progress-overlay';
+      overlay.className = 'progress-overlay';
+      overlay.innerHTML = '<div class="progress-box"><span class="progress-text"></span></div>';
+      document.body.appendChild(overlay);
+    }
+    overlay.querySelector('.progress-text').textContent = text;
+  }
+
+  /** 检测并显示失效文件（通过 batchGetFileInfo 批量检测） */
+  async showCleanupModal() {
+    const filesWithPath = this.fileManager.files.filter((f) => f.path);
+    if (filesWithPath.length === 0) {
+      this.showToast('没有可检测的文件（文件需要有路径信息）', 'info');
+      return;
+    }
+
+    this._showProgress(`正在检测文件... (0/${filesWithPath.length})`);
+
+    // 分批检测（每批 200 个路径，避免消息过大）
+    const BATCH_SIZE = 200;
+    const missingFiles = [];
+
+    for (let i = 0; i < filesWithPath.length; i += BATCH_SIZE) {
+      const batch = filesWithPath.slice(i, i + BATCH_SIZE);
+      const paths = batch.map((f) => f.path);
+      try {
+        const result = await this.sendNativeAction('batchGetFileInfo', { paths });
+        if (result && result.files) {
+          batch.forEach((f) => {
+            const info = result.files[f.path];
+            if (!info || info.error) {
+              missingFiles.push(f);
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('检测文件批次失败:', err);
+        // 检测失败的文件不标记为失效
+      }
+      const checked = Math.min(i + BATCH_SIZE, filesWithPath.length);
+      this._showProgress(`正在检测文件... (${checked}/${filesWithPath.length})`);
+    }
+
+    // 隐藏进度浮层
+    this._showProgress(null);
+
+    if (missingFiles.length === 0) {
+      this.showToast('✓ 所有文件都存在，没有需要清理的', 'success');
+      return;
+    }
+
+    // 显示清理弹窗
+    this._cleanupFiles = missingFiles;
+    this._cleanupSelected = new Set(missingFiles.map((f) => f.id));
+    this._renderCleanupList();
+    this.openModal('modal-cleanup');
+  }
+
+  /** 渲染清理弹窗中的失效文件列表 */
+  _renderCleanupList() {
+    const list = document.getElementById('cleanup-file-list');
+    const countEl = document.getElementById('cleanup-count');
+    if (!list || !this._cleanupFiles) return;
+
+    countEl.textContent = `检测到 ${this._cleanupFiles.length} 个失效文件`;
+
+    list.innerHTML = this._cleanupFiles.map((f) => {
+      const checked = this._cleanupSelected.has(f.id) ? 'checked' : '';
+      const tags = (f.tags || []).map((t) => `<span class="cleanup-tag">${this.escapeHtml(t)}</span>`).join('');
+      return `
+        <label class="cleanup-item">
+          <input type="checkbox" data-id="${f.id}" ${checked} />
+          <div class="cleanup-item-info">
+            <span class="cleanup-item-name" title="${this.escapeHtml(f.path || f.name)}">${this.escapeHtml(f.name)}</span>
+            <span class="cleanup-item-path">${this.escapeHtml(f.path || '')}</span>
+            ${tags ? `<div class="cleanup-item-tags">${tags}</div>` : ''}
+          </div>
+        </label>`;
+    }).join('');
+
+    // 绑定复选框事件
+    list.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        if (cb.checked) {
+          this._cleanupSelected.add(cb.dataset.id);
+        } else {
+          this._cleanupSelected.delete(cb.dataset.id);
+        }
+        document.getElementById('cleanup-selected-info').textContent =
+          `已选择 ${this._cleanupSelected.size} / ${this._cleanupFiles.length}`;
+      });
+    });
+
+    document.getElementById('cleanup-selected-info').textContent =
+      `已选择 ${this._cleanupSelected.size} / ${this._cleanupFiles.length}`;
+  }
+
+  /** 全选/取消全选清理列表 */
+  toggleCleanupSelectAll() {
+    if (!this._cleanupFiles) return;
+    const allSelected = this._cleanupSelected.size === this._cleanupFiles.length;
+    if (allSelected) {
+      this._cleanupSelected.clear();
+    } else {
+      this._cleanupSelected = new Set(this._cleanupFiles.map((f) => f.id));
+    }
+    this._renderCleanupList();
+  }
+
+  /** 确认清理（移入回收站） */
+  async confirmCleanup() {
+    if (!this._cleanupSelected || this._cleanupSelected.size === 0) {
+      this.showToast('请至少选择一个文件', 'error');
+      return;
+    }
+
+    const count = await this.fileManager.moveToTrashBatch(this._cleanupSelected);
+    this.closeModal('modal-cleanup');
+    this._cleanupFiles = null;
+    this._cleanupSelected = null;
+    this.showToast(`已将 ${count} 个失效文件移入回收站`, 'success');
+    this.render();
+  }
+
+  /** 打开回收站弹窗 */
+  showTrashModal() {
+    this.trashCurrentPage = 1;
+    this._renderTrashList();
+    this.openModal('modal-trash');
+  }
+
+  /** 渲染回收站列表 */
+  _renderTrashList() {
+    const list = document.getElementById('trash-file-list');
+    const infoEl = document.getElementById('trash-info');
+    const emptyBtn = document.getElementById('btn-empty-trash');
+    const restoreAllBtn = document.getElementById('btn-restore-all');
+    if (!list) return;
+
+    const trashFiles = this.fileManager.getTrashFiles();
+
+    if (trashFiles.length === 0) {
+      list.innerHTML = '<div class="trash-empty">回收站为空</div>';
+      infoEl.textContent = '';
+      emptyBtn.style.display = 'none';
+      restoreAllBtn.style.display = 'none';
+      return;
+    }
+
+    emptyBtn.style.display = '';
+    restoreAllBtn.style.display = '';
+
+    // 分页
+    const totalPages = Math.ceil(trashFiles.length / this.trashPageSize);
+    if (this.trashCurrentPage > totalPages) this.trashCurrentPage = totalPages;
+    const startIdx = (this.trashCurrentPage - 1) * this.trashPageSize;
+    const pageFiles = trashFiles.slice(startIdx, startIdx + this.trashPageSize);
+
+    infoEl.textContent = `共 ${trashFiles.length} 个文件` +
+      (totalPages > 1 ? ` · 第 ${this.trashCurrentPage}/${totalPages} 页` : '');
+
+    list.innerHTML = pageFiles.map((f) => {
+      const deletedStr = this.formatTime(f.deletedTime);
+      const tags = (f.tags || []).slice(0, 3).map((t) =>
+        `<span class="cleanup-tag">${this.escapeHtml(this.tagManager.getDisplayName(t))}</span>`
+      ).join('');
+      return `
+        <div class="trash-item" data-id="${f.id}">
+          <div class="trash-item-info">
+            <span class="trash-item-name" title="${this.escapeHtml(f.path || f.name)}">${this.escapeHtml(f.name)}</span>
+            <div class="trash-item-meta">
+              <span class="trash-item-time">删除于 ${deletedStr}</span>
+              ${tags}
+            </div>
+          </div>
+          <div class="trash-item-actions">
+            <button class="btn btn-sm btn-secondary trash-restore-btn" data-id="${f.id}" title="恢复">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+              恢复
+            </button>
+            <button class="btn btn-sm btn-danger trash-delete-btn" data-id="${f.id}" title="永久删除">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+            </button>
+          </div>
+        </div>`;
+    }).join('');
+
+    // 分页控件
+    if (totalPages > 1) {
+      list.innerHTML += `
+        <div class="trash-pagination">
+          <button class="btn btn-sm btn-secondary" ${this.trashCurrentPage <= 1 ? 'disabled' : ''} data-trash-page="${this.trashCurrentPage - 1}">上一页</button>
+          <span>${this.trashCurrentPage} / ${totalPages}</span>
+          <button class="btn btn-sm btn-secondary" ${this.trashCurrentPage >= totalPages ? 'disabled' : ''} data-trash-page="${this.trashCurrentPage + 1}">下一页</button>
+        </div>`;
+    }
+
+    // 绑定事件
+    list.querySelectorAll('.trash-restore-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await this.fileManager.restoreFromTrash(btn.dataset.id);
+        this.showToast('已恢复文件', 'success');
+        this._renderTrashList();
+        this.render();
+      });
+    });
+
+    list.querySelectorAll('.trash-delete-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await this.fileManager.deleteFromTrash(btn.dataset.id);
+        this.showToast('已永久删除', 'info');
+        this._renderTrashList();
+        this.renderFooter();
+      });
+    });
+
+    list.querySelectorAll('[data-trash-page]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.trashCurrentPage = parseInt(btn.dataset.trashPage);
+        this._renderTrashList();
+      });
+    });
+  }
+
+  /** 清空回收站 */
+  async emptyTrash() {
+    const count = this.fileManager.trash.length;
+    if (count === 0) return;
+    if (!confirm(`确定要永久删除回收站中的 ${count} 个文件记录吗？此操作不可恢复！`)) return;
+    await this.fileManager.emptyTrash();
+    this.showToast(`已永久清除 ${count} 个文件记录`, 'info');
+    this._renderTrashList();
+    this.renderFooter();
+  }
+
+  /** 恢复回收站中所有文件 */
+  async restoreAllFromTrash() {
+    const count = this.fileManager.trash.length;
+    if (count === 0) return;
+    await this.fileManager.restoreAllFromTrash();
+    this.showToast(`已恢复全部 ${count} 个文件`, 'success');
+    this._renderTrashList();
+    this.render();
   }
 
   openModal(modalId) {
