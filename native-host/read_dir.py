@@ -16,6 +16,9 @@ def read_message():
     if len(raw_length) == 0:
         sys.exit(0)
     message_length = struct.unpack('=I', raw_length)[0]
+    if message_length > 10 * 1024 * 1024:  # 10MB 上限，防止恶意超大消息导致 OOM
+        sys.stderr.write(f"Message too large: {message_length} bytes\n")
+        sys.exit(1)
     message = sys.stdin.buffer.read(message_length).decode('utf-8')
     return json.loads(message)
 
@@ -146,12 +149,14 @@ def is_app_running(app_name):
     if system == 'Windows':
         try:
             # Windows: 使用 tasklist 查找进程
+            # 清理 app_name 防止 tasklist 过滤器注入
+            safe_name = app_name.replace('"', '').replace("'", '').replace('/', '').replace('\\', '')
             result = subprocess.run(
-                ['tasklist', '/FI', f'IMAGENAME eq {app_name}.exe', '/NH'],
+                ['tasklist', '/FI', f'IMAGENAME eq {safe_name}.exe', '/NH'],
                 capture_output=True, text=True, timeout=5,
                 creationflags=0x08000000  # CREATE_NO_WINDOW
             )
-            return app_name.lower() in result.stdout.lower()
+            return safe_name.lower() in result.stdout.lower()
         except Exception:
             return False
 
@@ -166,8 +171,9 @@ def is_app_running(app_name):
             pass
         # pgrep 对带空格的应用名不太好用，用 osascript 兜底
         try:
+            escaped_name = app_name.replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')
             result = subprocess.run(
-                ['osascript', '-e', f'tell application "System Events" to (name of processes) contains "{app_name}"'],
+                ['osascript', '-e', f'tell application "System Events" to (name of processes) contains "{escaped_name}"'],
                 capture_output=True, text=True, timeout=5
             )
             return 'true' in result.stdout.strip().lower()
@@ -277,9 +283,9 @@ def open_file_with(file_path, app):
                 if code_path:
                     running = is_app_running('Code')
                     if running:
-                        subprocess.Popen([code_path, '-r', file_path], shell=True)
+                        subprocess.Popen([code_path, '-r', file_path], creationflags=0x08000000)
                     else:
-                        subprocess.Popen([code_path, file_path], shell=True)
+                        subprocess.Popen([code_path, file_path], creationflags=0x08000000)
                     return {"success": True, "path": file_path, "app": app, "reused_window": running}
                 else:
                     # 尝试 code 命令（可能在 PATH 中）
@@ -289,7 +295,7 @@ def open_file_with(file_path, app):
                         if running:
                             args.append('-r')
                         args.append(file_path)
-                        subprocess.Popen(args, shell=True)
+                        subprocess.Popen(args, creationflags=0x08000000)
                         return {"success": True, "path": file_path, "app": app}
                     except Exception:
                         pass
@@ -308,9 +314,9 @@ def open_file_with(file_path, app):
                 if cursor_path:
                     running = is_app_running('Cursor')
                     if running:
-                        subprocess.Popen([cursor_path, '-r', file_path], shell=True)
+                        subprocess.Popen([cursor_path, '-r', file_path], creationflags=0x08000000)
                     else:
-                        subprocess.Popen([cursor_path, file_path], shell=True)
+                        subprocess.Popen([cursor_path, file_path], creationflags=0x08000000)
                     return {"success": True, "path": file_path, "app": app, "reused_window": running}
 
             # Sublime Text
@@ -350,7 +356,7 @@ def open_file_with(file_path, app):
 
             # 通用回退: 尝试直接用应用名执行，或使用 os.startfile
             try:
-                subprocess.Popen([app, file_path], shell=True)
+                subprocess.Popen([app, file_path], creationflags=0x08000000)
             except Exception:
                 os.startfile(file_path)
         else:
@@ -393,7 +399,7 @@ def open_terminal_at(dir_path, app=''):
 
             if 'iterm' in app_lower:
                 # iTerm2: 使用 AppleScript 在新标签或新窗口中打开
-                escaped_path = dir_path.replace('"', '\\"')
+                escaped_path = dir_path.replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')
                 script = f'''
                 tell application "iTerm"
                     activate
@@ -443,7 +449,7 @@ def open_terminal_at(dir_path, app=''):
 
             else:
                 # 默认 Terminal.app：使用 AppleScript 在新标签中 cd 到目录
-                escaped_path = dir_path.replace('"', '\\"')
+                escaped_path = dir_path.replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')
                 script = f'''
                 tell application "Terminal"
                     activate
@@ -622,7 +628,10 @@ else:
 
             # 方案3: 使用 open 命令启动独立 GUI 进程 + 通过临时文件传递结果
             try:
-                result_file = tempfile.mktemp(suffix='.txt')
+                fd, result_file = tempfile.mkstemp(suffix='.txt')
+                os.close(fd)
+                # 转义路径中的特殊字符，防止破坏生成的 Python 脚本
+                escaped_result_file = result_file.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'")
                 picker_script = f'''#!/usr/bin/env python3
 import tkinter as tk
 from tkinter import filedialog
@@ -634,7 +643,7 @@ root.after(100, lambda: root.focus_force())
 root.update()
 path = filedialog.askdirectory(title="选择要导入的目录")
 root.destroy()
-with open("{result_file}", "w") as f:
+with open("{escaped_result_file}", "w") as f:
     f.write(path if path else "__CANCELLED__")
 '''
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
@@ -802,6 +811,8 @@ def get_file_info(file_path):
 
 def batch_get_file_info(paths):
     """批量获取多个文件的详细信息"""
+    if len(paths) > 1000:
+        return {"error": f"路径数量超过上限 (最多 1000，收到 {len(paths)})"}
     results = {}
     for p in paths:
         info = get_file_info(p)
@@ -823,6 +834,10 @@ def rename_file(old_path, new_name):
 
     if not new_name or not new_name.strip():
         return {"error": "文件名不能为空"}
+
+    # 禁止路径遍历和空字节
+    if new_name.strip() == '..' or '\0' in new_name:
+        return {"error": "文件名不合法"}
 
     dir_path = os.path.dirname(old_path)
     new_path = os.path.join(dir_path, new_name)
@@ -1000,7 +1015,7 @@ def main():
             send_message(result)
         elif action == 'openTerminal':
             dir_path = message.get('path', '')
-            app = message.get('app', 'Terminal')
+            app = message.get('app', '')
             result = open_terminal_at(dir_path, app)
             send_message(result)
         elif action == 'getFileInfo':

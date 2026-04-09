@@ -195,4 +195,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     );
     return true;
   }
+
+  // 未知 action 兜底，防止前端 Promise 挂起
+  sendResponse({ error: `未知操作: ${request.action || '(empty)'}` });
 });

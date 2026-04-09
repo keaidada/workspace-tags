@@ -173,7 +173,6 @@ html, body {
 .tag-mode-tabs {
   display: flex;
   gap: 2px;
-  padding: 0 8px 8px;
   background: var(--bg-secondary);
   border-radius: var(--radius);
   margin: 0 8px 8px;
@@ -1673,7 +1672,7 @@ html, body {
   bottom: 0;
   background: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(4px);
-  z-index: 100;
+  z-index: 1200;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2216,7 +2215,7 @@ html, body {
 }
 
 .tag-tree-check-toggle:hover {
-  color: var(--text-primary);
+  color: var(--text);
   background: var(--bg-secondary);
 }
 
@@ -2288,7 +2287,7 @@ html, body {
   font-size: 13px;
   font-weight: 500;
   color: white;
-  z-index: 200;
+  z-index: 1300;
   animation: toastIn 200ms ease, toastOut 200ms ease 1.8s forwards;
   pointer-events: none;
   box-shadow: var(--shadow-lg);
@@ -2592,7 +2591,7 @@ html, body {
   padding: 10px 20px;
   flex-wrap: wrap;
   border-top: 1px solid var(--border);
-  background: var(--bg-primary);
+  background: var(--bg);
   flex-shrink: 0;
   z-index: 10;
   box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.04);
@@ -2619,8 +2618,8 @@ html, body {
   padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-primary);
-  color: var(--text-primary);
+  background: var(--bg);
+  color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -2670,8 +2669,8 @@ html, body {
   padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-primary);
-  color: var(--text-primary);
+  background: var(--bg);
+  color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
   outline: none;

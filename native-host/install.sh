@@ -1,5 +1,5 @@
 #!/bin/bash
-# Workspace Tags - Native Messaging Host 安装脚本 (macOS)
+# Workspace Tags - Native Messaging Host 安装脚本 (macOS / Linux)
 # 此脚本将 Native Host 注册到 Chrome，使扩展能够读取本地文件系统
 
 set -e
@@ -12,8 +12,20 @@ HOST_NAME="com.workspace_tags.native_host"
 # 确保 Python 脚本可执行
 chmod +x "$HOST_PATH"
 
-# Chrome Native Messaging Hosts 目录 (macOS)
-TARGET_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+# 根据平台选择 Chrome Native Messaging Hosts 目录
+OS="$(uname -s)"
+case "$OS" in
+  Darwin)
+    TARGET_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+    ;;
+  Linux)
+    TARGET_DIR="$HOME/.config/google-chrome/NativeMessagingHosts"
+    ;;
+  *)
+    echo "不支持的操作系统: $OS"
+    exit 1
+    ;;
+esac
 mkdir -p "$TARGET_DIR"
 
 # 需要获取扩展 ID —— 先尝试从命令行参数获取

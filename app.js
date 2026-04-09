@@ -17,7 +17,12 @@ class StorageService {
     if (this._useChromeStorage()) {
       return new Promise((resolve) => {
         chrome.storage.local.get([key], (result) => {
-          resolve(result[key] !== undefined ? result[key] : defaultVal);
+          if (chrome.runtime.lastError) {
+            console.error(`chrome.storage.local.get 失败 (key=${key}):`, chrome.runtime.lastError.message);
+            resolve(defaultVal);
+          } else {
+            resolve(result[key] !== undefined ? result[key] : defaultVal);
+          }
         });
       });
     }
@@ -248,7 +253,7 @@ class FileManager {
   }
 
   generateId() {
-    return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+    return Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
   }
 
   static getDateTag() {
@@ -518,8 +523,7 @@ class FileManager {
     const file = this.files[idx];
     this.trash.push({ ...file, deletedTime: Date.now() });
     this.files.splice(idx, 1);
-    await this.save();
-    await this.saveTrash();
+    await Promise.all([this.save(), this.saveTrash()]);
   }
 
   /** 批量移入回收站 */
@@ -530,8 +534,7 @@ class FileManager {
     toRemove.forEach((f) => this.trash.push({ ...f, deletedTime: now }));
     this.files = this.files.filter((f) => !idSet.has(f.id));
     if (toRemove.length > 0) {
-      await this.save();
-      await this.saveTrash();
+      await Promise.all([this.save(), this.saveTrash()]);
     }
     return toRemove.length;
   }
@@ -544,8 +547,7 @@ class FileManager {
     delete file.deletedTime;
     this.files.push(file);
     this.trash.splice(idx, 1);
-    await this.save();
-    await this.saveTrash();
+    await Promise.all([this.save(), this.saveTrash()]);
   }
 
   /** 从回收站恢复全部 */
@@ -557,8 +559,7 @@ class FileManager {
       this.files.push(file);
     });
     this.trash = [];
-    await this.save();
-    await this.saveTrash();
+    await Promise.all([this.save(), this.saveTrash()]);
   }
 
   /** 从回收站永久删除单个 */
@@ -729,6 +730,14 @@ class UIController {
    * 批量获取文件详细信息并更新到 DOM
    */
   async loadFileInfoForVisibleCards() {
+    // 清理不再存在于文件列表中的缓存条目，防止内存泄漏
+    const activePaths = new Set(this.fileManager.files.map((f) => f.path).filter(Boolean));
+    for (const path of Object.keys(this.fileInfoCache)) {
+      if (!activePaths.has(path)) {
+        delete this.fileInfoCache[path];
+      }
+    }
+
     const cards = document.querySelectorAll('.file-card[data-filepath]');
     const pathsToFetch = [];
     cards.forEach((card) => {
@@ -745,10 +754,7 @@ class UIController {
     }
 
     try {
-      const result = await chrome.runtime.sendMessage({
-        action: 'batchGetFileInfo',
-        paths: pathsToFetch
-      });
+      const result = await this.sendNativeAction('batchGetFileInfo', { paths: pathsToFetch });
       if (result && result.files) {
         for (const [path, info] of Object.entries(result.files)) {
           if (!info.error) {
@@ -789,12 +795,12 @@ class UIController {
         </span>
         <span class="file-detail-item" title="文件类型">
           <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>
-          ${info.fileType.toUpperCase()}
+          ${this.escapeHtml(info.fileType ? info.fileType.toUpperCase() : '--')}
         </span>
         ${info.permissions ? `
         <span class="file-detail-item" title="文件权限">
           <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
-          ${info.permissions}
+          ${this.escapeHtml(info.permissions)}
         </span>` : ''}
       `;
     });
@@ -805,9 +811,9 @@ class UIController {
    */
   formatFileSize(bytes) {
     if (bytes === 0) return '0 B';
-    if (bytes === undefined || bytes === null) return '--';
+    if (bytes === undefined || bytes === null || !Number.isFinite(bytes) || bytes < 0) return '--';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
     const size = (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1);
     return `${size} ${units[i]}`;
   }
@@ -1380,6 +1386,23 @@ class UIController {
     const name = input.value.trim();
     if (!name) return;
 
+    // 标签名验证：不允许连续斜杠、前后斜杠、空白段
+    if (name.startsWith('/') || name.endsWith('/') || name.includes('//')) {
+      this.showToast('标签名不能以 / 开头或结尾，也不能包含连续 /', 'error');
+      return;
+    }
+    // 不允许标签名段为空白
+    const segments = name.split('/');
+    if (segments.some((s) => !s.trim())) {
+      this.showToast('标签名的每一层都不能为空', 'error');
+      return;
+    }
+    // 标签名长度限制
+    if (name.length > 100) {
+      this.showToast('标签名过长，最多 100 个字符', 'error');
+      return;
+    }
+
     const fullName = this.newTagParent ? `${this.newTagParent}/${name}` : name;
 
     if (this.tagManager.exists(fullName)) {
@@ -1427,6 +1450,21 @@ class UIController {
     const newDisplayName = input.value.trim();
     if (!newDisplayName) return;
 
+    // 标签名验证：不允许连续斜杠、前后斜杠、空白段
+    if (newDisplayName.startsWith('/') || newDisplayName.endsWith('/') || newDisplayName.includes('//')) {
+      this.showToast('标签名不能以 / 开头或结尾，也不能包含连续 /', 'error');
+      return;
+    }
+    const segments = newDisplayName.split('/');
+    if (segments.some((s) => !s.trim())) {
+      this.showToast('标签名的每一层都不能为空', 'error');
+      return;
+    }
+    if (newDisplayName.length > 100) {
+      this.showToast('标签名过长，最多 100 个字符', 'error');
+      return;
+    }
+
     const oldName = this.renameTagOld;
     const parts = oldName.split('/');
     parts[parts.length - 1] = newDisplayName;
@@ -1454,6 +1492,18 @@ class UIController {
       if (t.startsWith(oldName + '/')) {
         this.activeTags.delete(t);
         this.activeTags.add(newName + t.substring(oldName.length));
+      }
+    }
+
+    // 更新 expandedTags 中的引用
+    if (this.expandedTags.has(oldName)) {
+      this.expandedTags.delete(oldName);
+      this.expandedTags.add(newName);
+    }
+    for (const t of [...this.expandedTags]) {
+      if (t.startsWith(oldName + '/')) {
+        this.expandedTags.delete(t);
+        this.expandedTags.add(newName + t.substring(oldName.length));
       }
     }
 
@@ -1579,6 +1629,22 @@ class UIController {
     const name = input.value.trim();
     if (!name) return;
 
+    // 标签名验证：不允许连续斜杠、前后斜杠、空白段
+    if (name.startsWith('/') || name.endsWith('/') || name.includes('//')) {
+      this.showToast('标签名不能以 / 开头或结尾，也不能包含连续 /', 'error');
+      return;
+    }
+    const segments = name.split('/');
+    if (segments.some((s) => !s.trim())) {
+      this.showToast('标签名的每一层都不能为空', 'error');
+      return;
+    }
+    // 标签名长度限制
+    if (name.length > 100) {
+      this.showToast('标签名过长，最多 100 个字符', 'error');
+      return;
+    }
+
     await this.tagManager.addTag(name);
     this.selectedTags.add(name);
     input.value = '';
@@ -1645,6 +1711,9 @@ class UIController {
 
     Promise.all(promises).then(() => {
       this.renderPendingFiles();
+    }).catch(() => {
+      this.showToast('部分文件读取失败', 'error');
+      this.renderPendingFiles();
     });
   }
 
@@ -1693,6 +1762,9 @@ class UIController {
   }
 
   async confirmAddFiles() {
+    if (this._confirmAddFilesRunning) return;
+    this._confirmAddFilesRunning = true;
+    try {
     if (this.pendingFileNames.length === 0) {
       this.showToast('请先选择文件', 'error');
       return;
@@ -1774,10 +1846,10 @@ class UIController {
     }
 
     this.render();
+    } finally {
+      this._confirmAddFilesRunning = false;
+    }
   }
-
-  // ==========================================
-  // 右键菜单：添加目录到标签
   // ==========================================
 
   _dirTagTarget = null;
@@ -1803,33 +1875,13 @@ class UIController {
       this.showToast('正在打开目录选择对话框...', 'info');
 
       // 调用 Native Host 弹出系统原生目录选择 + 列出文件（分页返回第一页）
-      const response = await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage(
-          { action: 'chooseAndListDir' },
-          (resp) => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-            } else {
-              resolve(resp);
-            }
-          }
-        );
-      });
+      // 超时设为 120 秒，因为需要等待用户在对话框中选择目录
+      const response = await this.sendNativeAction('chooseAndListDir', {}, 120000);
 
       // 用户取消了选择
       if (response.cancelled) {
         this._dirTagTarget = null;
         return;
-      }
-
-      if (response.error) {
-        // Native Host 不支持或无法弹出对话框，回退到浏览器选择
-        if (response.error.includes('未知操作') || response.error.includes('无法弹出')) {
-          this.showToast('系统目录选择不可用，已切换到浏览器选择方式', 'info');
-          document.getElementById('dir-picker').click();
-          return;
-        }
-        throw new Error(response.error);
       }
 
       if (!response.files || response.files.length === 0) {
@@ -1910,7 +1962,13 @@ class UIController {
       }
     } catch (err) {
       console.error('选择目录失败:', err);
-      this.showToast(`选择目录失败: ${err.message}`, 'error');
+      // Native Host 不支持或无法弹出对话框，回退到浏览器选择
+      if (err.message && (err.message.includes('未知操作') || err.message.includes('无法弹出'))) {
+        this.showToast('系统目录选择不可用，已切换到浏览器选择方式', 'info');
+        document.getElementById('dir-picker').click();
+      } else {
+        this.showToast(`选择目录失败: ${err.message}`, 'error');
+      }
     }
 
     this._dirTagTarget = null;
@@ -2005,20 +2063,7 @@ class UIController {
       if (isLikelyDir && typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
         // 目录路径 → 通过 Native Host 读取内容
         try {
-          const response = await new Promise((resolve, reject) => {
-            chrome.runtime.sendMessage(
-              { action: 'listDir', path: cleanPath },
-              (resp) => {
-                if (chrome.runtime.lastError) {
-                  reject(new Error(chrome.runtime.lastError.message));
-                } else if (resp && resp.error) {
-                  reject(new Error(resp.error));
-                } else {
-                  resolve(resp);
-                }
-              }
-            );
-          });
+          const response = await this.sendNativeAction('listDir', { path: cleanPath });
 
           if (response.files && response.files.length > 0) {
             for (const relPath of response.files) {
@@ -3059,6 +3104,8 @@ class UIController {
           navigator.clipboard.writeText(text).then(() => {
             const labels = { fullpath: '全路径', dirpath: '目录路径', filename: '文件名' };
             this.showToast(`已复制${labels[copyType] || ''}`, 'success');
+          }).catch(() => {
+            this.showToast('复制失败，请检查剪贴板权限', 'error');
           });
         } else {
           this.showToast('无法获取路径信息', 'error');
@@ -3221,8 +3268,14 @@ class UIController {
     input.focus();
     input.setSelectionRange(0, selectEnd);
 
+    // 防重入标志，防止 blur+Enter 双重触发
+    let renameConfirmed = false;
+
     // 确认重命名的逻辑
     const confirmRename = async () => {
+      if (renameConfirmed) return;
+      renameConfirmed = true;
+
       const newName = input.value.trim();
 
       // 恢复显示状态
@@ -3309,15 +3362,25 @@ class UIController {
   /**
    * 发送 Native Messaging 消息（通过 background.js 中转）
    */
-  sendNativeAction(action, data = {}) {
+  sendNativeAction(action, data = {}, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
       if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
         reject(new Error('当前环境不支持 Native Messaging'));
         return;
       }
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error(`Native Host 响应超时 (${action}, ${timeoutMs}ms)`));
+        }
+      }, timeoutMs);
       chrome.runtime.sendMessage(
         { action, ...data },
         (resp) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
           if (chrome.runtime.lastError) {
             reject(new Error(chrome.runtime.lastError.message));
           } else if (resp && resp.error) {
@@ -3483,9 +3546,10 @@ class UIController {
   /**
    * 批量在终端中打开选中文件的目录
    * 自动去重（多个文件在同一目录只打开一次）
-   * @param {string} [termApp='Terminal'] 终端应用名
+   * @param {string} [termApp] 终端应用名，默认根据平台选择
    */
-  async batchOpenTerminal(termApp = 'Terminal') {
+  async batchOpenTerminal(termApp) {
+    if (!termApp) termApp = this.platform === 'win' ? 'cmd' : 'Terminal';
     if (this.selectedFiles.size === 0) return;
 
     // 收集所有目录路径并去重
@@ -3610,6 +3674,8 @@ class UIController {
     }
     navigator.clipboard.writeText(items.join('\n')).then(() => {
       this.showToast(`已复制 ${items.length} 条${labels[copyType] || ''}`, 'success');
+    }).catch(() => {
+      this.showToast('复制失败，请检查剪贴板权限', 'error');
     });
   }
 
@@ -3656,7 +3722,7 @@ class UIController {
       card.classList.toggle('selected', isSelected);
     });
 
-    this.renderBatchBar(this.selectedFiles.size, files.length);
+    this.renderBatchBar(this.selectedFiles.size, allFilteredFiles.length);
   }
 
   async batchRemoveFiles() {
@@ -3790,6 +3856,9 @@ class UIController {
   }
 
   async confirmBatchTag() {
+    if (this._confirmBatchTagRunning) return;
+    this._confirmBatchTagRunning = true;
+    try {
     const container = document.getElementById('batch-tag-select');
     // 获取所有被选中的标签（包括自动勾选的子标签）
     const checked = Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map((cb) => cb.value);
@@ -3835,6 +3904,9 @@ class UIController {
     this.showToast(`已为 ${count} 个文件${actionText}${tagMsg}`, 'success');
     this.selectedFiles.clear();
     this.render();
+    } finally {
+      this._confirmBatchTagRunning = false;
+    }
   }
 
   renderFileCard(file) {
@@ -3907,7 +3979,7 @@ class UIController {
             </button>
             <div class="terminal-dropdown" style="display:none;">
               <div class="terminal-dropdown-label">应用</div>
-              <button class="terminal-dropdown-item" data-terminal="Terminal">终端 (Terminal)</button>
+              <button class="terminal-dropdown-item" data-terminal="${this.platform === 'win' ? 'cmd' : 'Terminal'}">${this.platform === 'win' ? '命令提示符 (CMD)' : '终端 (Terminal)'}</button>
               <div class="open-with-divider"></div>
               <div class="terminal-search-wrap">
                 <input type="text" class="terminal-search-input" placeholder="搜索应用…" />
@@ -4748,13 +4820,17 @@ class UIController {
     const existing = document.querySelector('.toast');
     if (existing) existing.remove();
 
+    // 取消前一个 toast 的定时器，防止误移除新 toast
+    if (this._toastTimer) clearTimeout(this._toastTimer);
+
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.textContent = message;
     document.body.appendChild(toast);
 
-    setTimeout(() => {
+    this._toastTimer = setTimeout(() => {
       if (toast.parentNode) toast.remove();
+      this._toastTimer = null;
     }, 2500);
   }
 }
