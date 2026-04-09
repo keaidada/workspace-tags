@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文件标签管理器</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- 左侧边栏 -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <svg class="brand-icon" viewBox="0 0 24 24" width="28" height="28">
+            <path fill="currentColor" d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/>
+          </svg>
+          <h1>标签管理器</h1>
+        </div>
+      </div>
+
+      <!-- 标签树 -->
+      <nav class="sidebar-nav">
+        <div class="nav-section-title">
+          标签
+          <button id="btn-add-root-tag" class="nav-action-btn" title="新建根标签">
+            <svg viewBox="0 0 24 24" width="16" height="16">
+              <path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+            </svg>
+          </button>
+        </div>
+        <!-- 标签模式切换 -->
+        <div class="tag-mode-tabs">
+          <button class="tag-mode-tab active" data-mode="custom" title="自定义标签">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>
+            自定义
+          </button>
+          <button class="tag-mode-tab" data-mode="time" title="时间标签">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+            时间
+          </button>
+        </div>
+        <div id="tag-filter-list" class="tag-nav-list">
+          <button class="tag-nav-item active" data-tag="__all__">
+            <svg viewBox="0 0 24 24" width="18" height="18">
+              <path fill="currentColor" d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>
+            </svg>
+            <span class="tag-nav-text">全部文件</span>
+            <span class="tag-nav-count" id="all-count">0</span>
+          </button>
+        </div>
+      </nav>
+
+      <!-- 侧边栏底部统计 -->
+      <div class="sidebar-footer">
+        <span id="file-count">0 个文件</span>
+        <span>·</span>
+        <span id="tag-count">0 个标签</span>
+      </div>
+    </aside>
+
+    <!-- 可拖拽分割线 -->
+    <div class="sidebar-resizer" id="sidebar-resizer"></div>
+
+    <!-- 主内容区 -->
+    <main class="main-content">
+      <!-- 顶部工具栏 -->
+      <header class="toolbar">
+        <div class="toolbar-left">
+          <h2 id="current-view-title">全部文件</h2>
+          <div id="tag-breadcrumb" class="tag-breadcrumb" style="display:none;"></div>
+        </div>
+        <div class="toolbar-right">
+          <div class="search-area">
+            <div class="search-box">
+              <svg class="search-icon" viewBox="0 0 24 24" width="18" height="18">
+                <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+              </svg>
+              <input type="text" id="search-input" placeholder="搜索文件名或标签..." />
+              <!-- 标签筛选按钮 -->
+              <button class="search-tag-toggle" id="search-tag-toggle" title="按标签筛选">
+                <svg viewBox="0 0 24 24" width="16" height="16">
+                  <path fill="currentColor" d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/>
+                </svg>
+              </button>
+            </div>
+            <!-- 已选标签 chips -->
+            <div class="search-tag-chips" id="search-tag-chips" style="display:none;"></div>
+            <!-- 标签选择下拉面板 -->
+            <div class="search-tag-dropdown" id="search-tag-dropdown" style="display:none;">
+              <div class="search-tag-filter">
+                <input type="text" id="search-tag-filter-input" placeholder="过滤标签..." />
+              </div>
+              <div class="search-tag-list" id="search-tag-list"></div>
+            </div>
+          </div>
+          <button id="btn-sort" class="toolbar-btn" title="切换排序">
+            <svg viewBox="0 0 24 24" width="18" height="18">
+              <path fill="currentColor" d="M3 18h6v-2H3v2zM3 6v2h18V6H3zm0 7h12v-2H3v2z"/>
+            </svg>
+            <span class="sort-label">最新优先</span>
+          </button>
+          <button id="btn-add-files" class="toolbar-btn primary" title="添加文件">
+            <svg viewBox="0 0 24 24" width="18" height="18">
+              <path fill="currentColor" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zm-3-7h-2v2h-2v-2H9v-2h2V9h2v2h2v2z"/>
+            </svg>
+            <span>添加文件</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- 隐藏的文件选择器（multiple 支持多选文件） -->
+      <input type="file" id="file-picker" multiple style="display:none;" />
+      <!-- 隐藏的目录选择器 -->
+      <input type="file" id="dir-picker" webkitdirectory directory multiple style="display:none;" />
+
+      <!-- 批量操作栏 -->
+      <div id="batch-bar" class="batch-bar" style="display:none;">
+        <span id="batch-selected-count" class="batch-info">已选择 0 个文件</span>
+        <div class="batch-actions">
+          <button id="btn-batch-select-all" class="batch-btn" title="全选/取消全选">全选</button>
+          <button id="btn-batch-open" class="batch-btn" title="用默认程序打开文件">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+            打开
+          </button>
+          <div class="batch-open-with-wrapper">
+            <button id="btn-batch-open-with" class="batch-btn" title="选择打开方式">
+              打开方式 ▾
+            </button>
+            <div id="batch-open-with-dropdown" class="batch-open-with-dropdown" style="display:none;">
+              <button class="batch-open-with-item" data-app="Visual Studio Code">VS Code</button>
+              <button class="batch-open-with-item" data-app="Cursor">Cursor</button>
+              <button class="batch-open-with-item" data-app="Sublime Text">Sublime Text</button>
+              <button class="batch-open-with-item" data-app="Terminal">终端</button>
+              <button class="batch-open-with-item" data-app="iTerm">iTerm2</button>
+              <button class="batch-open-with-item" data-app="TextEdit">文本编辑</button>
+              <button class="batch-open-with-item" data-app="Preview">预览</button>
+              <button class="batch-open-with-item" data-app="Google Chrome">Chrome</button>
+              <div class="open-with-divider"></div>
+              <div class="open-with-search-wrap">
+                <input type="text" id="batch-open-with-input" class="open-with-input" placeholder="搜索应用…" />
+                <div id="batch-open-with-search-results" class="open-with-search-results"></div>
+              </div>
+            </div>
+          </div>
+          <button id="btn-batch-reveal" class="batch-btn" title="打开所在目录">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+            打开目录
+          </button>
+          <div class="batch-terminal-wrapper">
+            <button id="btn-batch-terminal" class="batch-btn" title="在终端中打开文件所在目录">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zm-8-2h6v-2h-6v2zM7.5 17l1.41-1.41L6.33 13l2.59-2.59L7.51 9l-4 4 3.99 4z"/></svg>
+              应用 ▾
+            </button>
+            <div id="batch-terminal-dropdown" class="batch-terminal-dropdown" style="display:none;">
+              <button class="batch-terminal-item" data-terminal="Terminal">终端 (Terminal)</button>
+              <div class="open-with-divider"></div>
+              <div class="terminal-search-wrap">
+                <input type="text" id="batch-terminal-search-input" class="terminal-search-input" placeholder="搜索应用…" />
+                <div id="batch-terminal-search-results" class="terminal-search-results"></div>
+              </div>
+            </div>
+          </div>
+          <button id="btn-batch-copy-path" class="batch-btn" title="复制文件完整路径">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            复制 ▾
+          </button>
+          <div id="batch-copy-dropdown" class="batch-copy-dropdown" style="display:none;">
+            <button class="batch-copy-dropdown-item" data-copy-type="fullpath">复制全路径</button>
+            <button class="batch-copy-dropdown-item" data-copy-type="dirpath">复制目录路径</button>
+            <button class="batch-copy-dropdown-item" data-copy-type="filename">复制文件名</button>
+          </div>
+          <button id="btn-batch-add-tag" class="batch-btn primary" title="批量添加标签">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>
+            添加标签
+          </button>
+          <button id="btn-batch-remove-tag" class="batch-btn warning" title="批量移除标签">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>
+            移除标签
+          </button>
+          <button id="btn-batch-delete" class="batch-btn danger" title="批量移除文件记录">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+            移除记录
+          </button>
+          <button id="btn-batch-cancel" class="batch-btn" title="取消选择">取消</button>
+        </div>
+      </div>
+
+      <!-- 文件列表 -->
+      <div class="file-grid-container" id="file-grid-container">
+        <div id="file-list" class="file-grid">
+          <div class="empty-state" id="empty-state">
+            <svg viewBox="0 0 24 24" width="64" height="64">
+              <path fill="currentColor" opacity="0.2" d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/>
+            </svg>
+            <h3>还没有任何标签和文件</h3>
+            <p>在左侧栏点击 "+" 新建标签</p>
+            <p>右键标签可以新建子标签、添加文件</p>
+            <p>也可以点击右上角 "添加文件" 并选择标签</p>
+          </div>
+        </div>
+        <!-- 分页控件 -->
+        <div id="pagination-bar" class="pagination-bar" style="display:none;"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 右键菜单 -->
+  <div id="context-menu" class="context-menu" style="display:none;">
+    <button class="ctx-item" data-action="add-child">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+      新建子标签
+    </button>
+    <button class="ctx-item" data-action="upload-files">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zm-3-7h-2v2h-2v-2H9v-2h2V9h2v2h2v2z"/></svg>
+      添加文件到此标签
+    </button>
+    <button class="ctx-item" data-action="upload-dir">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z"/></svg>
+      添加目录到此标签
+    </button>
+    <button class="ctx-item" data-action="rename">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+      重命名标签
+    </button>
+    <div class="ctx-divider"></div>
+    <button class="ctx-item danger" data-action="delete">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+      删除标签
+    </button>
+  </div>
+
+  <!-- 添加文件弹窗（选择标签 + 选文件） -->
+  <div class="modal-overlay" id="modal-add-files" style="display:none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>添加文件</h3>
+        <button class="modal-close" data-close="modal-add-files">&times;</button>
+      </div>
+      <div class="modal-body">
+        <!-- 选择标签 -->
+        <div class="form-section">
+          <h4>选择标签</h4>
+          <div id="modal-tag-select" class="tag-select-list"></div>
+          <div class="tag-input-group" style="margin-top: 10px;">
+            <input type="text" id="modal-new-tag-input" placeholder="或输入新标签名（支持 / 分层）" />
+            <button id="btn-modal-add-tag" class="btn btn-primary">新建</button>
+          </div>
+        </div>
+        <!-- 选择文件 -->
+        <div class="form-section">
+          <h4>选择文件</h4>
+          <div class="upload-area" id="upload-area">
+            <svg viewBox="0 0 24 24" width="32" height="32">
+              <path fill="currentColor" opacity="0.4" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/>
+            </svg>
+            <p>点击选择文件 或 拖拽文件到此处</p>
+            <p class="upload-hint">也可以拖拽文件夹</p>
+          </div>
+          <!-- 手动输入路径 -->
+          <div class="manual-path-section">
+            <div class="manual-path-header" id="manual-path-toggle">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+              <span>手动输入路径</span>
+            </div>
+            <div class="manual-path-body" id="manual-path-body" style="display:none;">
+              <textarea id="manual-path-input" placeholder="输入文件路径，每行一个&#10;例如：&#10;/Users/xxx/documents/file1.pdf&#10;/Users/xxx/documents/file2.txt&#10;&#10;也支持输入目录路径，例如：&#10;/Users/xxx/documents/myFolder/" rows="4"></textarea>
+              <button class="btn btn-secondary btn-sm" id="btn-add-manual-paths">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                添加
+              </button>
+            </div>
+          </div>
+          <div id="pending-files-list" class="pending-files-list"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" data-close="modal-add-files">取消</button>
+          <button class="btn btn-primary" id="btn-confirm-add-files">确认添加</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加目录到标签弹窗 -->
+  <div class="modal-overlay" id="modal-add-dir" style="display:none;">
+    <div class="modal modal-small">
+      <div class="modal-header">
+        <h3>添加目录到标签</h3>
+        <button class="modal-close" data-close="modal-add-dir">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint" id="add-dir-hint">目标标签：</p>
+        <div class="add-dir-options">
+          <button class="btn btn-secondary add-dir-option" id="btn-dir-browse">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+            选择目录
+          </button>
+          <div class="add-dir-divider"><span>或</span></div>
+          <div class="add-dir-manual">
+            <input type="text" id="dir-manual-input" placeholder="输入目录路径，如 /Users/xxx/documents/" />
+            <button class="btn btn-primary" id="btn-dir-manual-confirm">确认导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建标签弹窗 -->
+  <div class="modal-overlay" id="modal-new-tag" style="display:none;">
+    <div class="modal modal-small">
+      <div class="modal-header">
+        <h3 id="modal-new-tag-title">新建标签</h3>
+        <button class="modal-close" data-close="modal-new-tag">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="modal-new-tag-hint" class="modal-hint"></p>
+        <div class="tag-input-group">
+          <input type="text" id="new-tag-name-input" placeholder="请输入标签名" />
+          <button id="btn-confirm-new-tag" class="btn btn-primary">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 重命名标签弹窗 -->
+  <div class="modal-overlay" id="modal-rename-tag" style="display:none;">
+    <div class="modal modal-small">
+      <div class="modal-header">
+        <h3>重命名标签</h3>
+        <button class="modal-close" data-close="modal-rename-tag">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="rename-tag-hint" class="modal-hint"></p>
+        <div class="tag-input-group">
+          <input type="text" id="rename-tag-input" placeholder="新标签名" />
+          <button id="btn-confirm-rename" class="btn btn-primary">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 确认删除弹窗 -->
+  <div class="modal-overlay" id="modal-confirm" style="display:none;">
+    <div class="modal modal-small">
+      <div class="modal-header">
+        <h3>确认删除</h3>
+        <button class="modal-close" data-close="modal-confirm">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="confirm-message">确定要删除吗？</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" data-close="modal-confirm">取消</button>
+          <button class="btn btn-danger" id="btn-confirm-delete">删除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 管理文件标签弹窗 -->
+  <div class="modal-overlay" id="modal-file-tags" style="display:none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>管理文件标签</h3>
+        <button class="modal-close" data-close="modal-file-tags">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-file-name" id="modal-file-tags-filename"></p>
+        <div class="file-tags-tree-wrap" id="file-tags-tree"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btn-save-file-tags">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          确认
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 批量标签操作弹窗 -->
+  <div class="modal-overlay" id="modal-batch-tag" style="display:none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="batch-tag-modal-title">批量操作标签</h3>
+        <button class="modal-close" data-close="modal-batch-tag">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-section">
+          <h4>选择标签</h4>
+          <div id="batch-tag-select" class="tag-select-list"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" data-close="modal-batch-tag">取消</button>
+          <button class="btn btn-primary" id="btn-confirm-batch-tag">确认</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
