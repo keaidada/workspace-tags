@@ -456,6 +456,27 @@
             </button>
           </div>
         </div>
+        <!-- 回收站搜索栏 -->
+        <div class="trash-search-area">
+          <div class="trash-search-box">
+            <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16">
+              <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+            </svg>
+            <input type="text" id="trash-search-input" placeholder="搜索文件名或标签..." />
+            <button class="search-tag-toggle" id="trash-tag-toggle" title="按标签筛选">
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor" d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/>
+              </svg>
+            </button>
+          </div>
+          <div class="search-tag-chips" id="trash-tag-chips" style="display:none;"></div>
+          <div class="search-tag-dropdown" id="trash-tag-dropdown" style="display:none;">
+            <div class="search-tag-filter">
+              <input type="text" id="trash-tag-filter-input" placeholder="过滤标签..." />
+            </div>
+            <div class="search-tag-list" id="trash-tag-list"></div>
+          </div>
+        </div>
         <div class="trash-list-wrap" id="trash-file-list">
           <div class="trash-empty">回收站为空</div>
         </div>

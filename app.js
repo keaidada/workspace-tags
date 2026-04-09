@@ -624,6 +624,10 @@ class UIController {
     // 回收站分页
     this.trashCurrentPage = 1;
     this.trashPageSize = 50;
+
+    // 回收站搜索
+    this.trashSearchQuery = '';
+    this.trashSearchTags = new Set();
   }
 
   async init() {
@@ -4120,8 +4124,218 @@ class UIController {
   /** 打开回收站弹窗 */
   showTrashModal() {
     this.trashCurrentPage = 1;
+    this.trashSearchQuery = '';
+    this.trashSearchTags = new Set();
+    // 重置搜索 UI
+    const searchInput = document.getElementById('trash-search-input');
+    if (searchInput) searchInput.value = '';
+    const chipsEl = document.getElementById('trash-tag-chips');
+    if (chipsEl) { chipsEl.style.display = 'none'; chipsEl.innerHTML = ''; }
+    const dropdown = document.getElementById('trash-tag-dropdown');
+    if (dropdown) dropdown.style.display = 'none';
+    const toggle = document.getElementById('trash-tag-toggle');
+    if (toggle) toggle.classList.remove('active');
+    this._bindTrashSearchEvents();
     this._renderTrashList();
     this.openModal('modal-trash');
+  }
+
+  /** 绑定回收站搜索事件（仅绑定一次） */
+  _bindTrashSearchEvents() {
+    if (this._trashSearchBound) return;
+    this._trashSearchBound = true;
+
+    // 文件名搜索（200ms 防抖）
+    this._trashSearchDebounce = null;
+    document.getElementById('trash-search-input')?.addEventListener('input', (e) => {
+      this.trashSearchQuery = e.target.value;
+      this.trashCurrentPage = 1;
+      clearTimeout(this._trashSearchDebounce);
+      this._trashSearchDebounce = setTimeout(() => {
+        this._renderTrashList();
+      }, 200);
+    });
+
+    // 标签筛选按钮
+    document.getElementById('trash-tag-toggle')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._toggleTrashTagDropdown();
+    });
+
+    // 标签过滤输入（150ms 防抖）
+    this._trashTagFilterDebounce = null;
+    document.getElementById('trash-tag-filter-input')?.addEventListener('input', (e) => {
+      clearTimeout(this._trashTagFilterDebounce);
+      this._trashTagFilterDebounce = setTimeout(() => {
+        this._renderTrashTagList(e.target.value.trim().toLowerCase());
+      }, 150);
+    });
+    document.getElementById('trash-tag-filter-input')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+
+    // 点击外部关闭标签下拉
+    document.getElementById('modal-trash')?.addEventListener('click', (e) => {
+      const dropdown = document.getElementById('trash-tag-dropdown');
+      if (dropdown && dropdown.style.display !== 'none' &&
+          !e.target.closest('.search-tag-dropdown') &&
+          !e.target.closest('#trash-tag-toggle')) {
+        dropdown.style.display = 'none';
+        document.getElementById('trash-tag-toggle')?.classList.remove('active');
+      }
+    });
+  }
+
+  /** 切换回收站标签下拉面板 */
+  _toggleTrashTagDropdown() {
+    const dropdown = document.getElementById('trash-tag-dropdown');
+    const toggle = document.getElementById('trash-tag-toggle');
+    const filterInput = document.getElementById('trash-tag-filter-input');
+
+    if (dropdown.style.display !== 'none') {
+      dropdown.style.display = 'none';
+      toggle.classList.remove('active');
+    } else {
+      dropdown.style.display = 'flex';
+      toggle.classList.add('active');
+      filterInput.value = '';
+      filterInput.focus();
+      this._renderTrashTagList('');
+    }
+  }
+
+  /** 渲染回收站标签选择列表 */
+  _renderTrashTagList(filterText) {
+    const container = document.getElementById('trash-tag-list');
+    if (!container) return;
+
+    // 收集回收站文件中出现的标签及计数
+    const trashFiles = this.fileManager.getTrashFiles();
+    const tagCounts = new Map();
+    trashFiles.forEach((f) => {
+      (f.tags || []).forEach((t) => {
+        tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
+      });
+    });
+
+    const allTags = this.tagManager.getAllTags();
+    const tagColors = [
+      '#3b82f6', '#10b981', '#f59e0b', '#ec4899',
+      '#6366f1', '#a855f7', '#ef4444', '#14b8a6',
+    ];
+
+    // 只显示回收站中存在的标签
+    const sorted = [...allTags]
+      .filter((t) => tagCounts.has(t.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const filtered = filterText
+      ? sorted.filter((t) => t.name.toLowerCase().includes(filterText))
+      : sorted;
+
+    if (filtered.length === 0) {
+      container.innerHTML = '<div style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px;">没有匹配的标签</div>';
+      return;
+    }
+
+    container.innerHTML = filtered.map((tag) => {
+      const isSelected = this.trashSearchTags.has(tag.name);
+      const count = tagCounts.get(tag.name) || 0;
+      const depth = (tag.name.match(/\//g) || []).length;
+      const displayName = this.tagManager.getDisplayName(tag.name);
+
+      return `
+        <div class="search-tag-option ${isSelected ? 'selected' : ''}" data-tag="${this.escapeHtml(tag.name)}" style="padding-left: ${12 + depth * 16}px;">
+          <span class="tag-opt-check">
+            ${isSelected ? '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="white" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>' : ''}
+          </span>
+          <span class="tag-opt-dot" style="background: ${tagColors[tag.color % 8]}"></span>
+          <span class="tag-opt-name" title="${this.escapeHtml(tag.name)}">${this.escapeHtml(displayName)}</span>
+          <span class="tag-opt-count">${count}</span>
+        </div>
+      `;
+    }).join('');
+
+    // 绑定点击事件
+    container.querySelectorAll('.search-tag-option').forEach((opt) => {
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const tagName = opt.getAttribute('data-tag');
+        if (this.trashSearchTags.has(tagName)) {
+          this.trashSearchTags.delete(tagName);
+        } else {
+          this.trashSearchTags.add(tagName);
+        }
+        const filterInput = document.getElementById('trash-tag-filter-input');
+        this._renderTrashTagList(filterInput.value.trim().toLowerCase());
+        this._updateTrashTagChips();
+        this.trashCurrentPage = 1;
+        this._renderTrashList();
+      });
+    });
+  }
+
+  /** 更新回收站已选标签 chips */
+  _updateTrashTagChips() {
+    const chipsContainer = document.getElementById('trash-tag-chips');
+    if (!chipsContainer) return;
+
+    if (this.trashSearchTags.size === 0) {
+      chipsContainer.style.display = 'none';
+      chipsContainer.innerHTML = '';
+      return;
+    }
+
+    chipsContainer.style.display = 'flex';
+
+    const tagColors = [
+      '#3b82f6', '#10b981', '#f59e0b', '#ec4899',
+      '#6366f1', '#a855f7', '#ef4444', '#14b8a6',
+    ];
+
+    let html = [...this.trashSearchTags].map((tagName) => {
+      const displayName = this.tagManager.getDisplayName(tagName);
+      const tag = this.tagManager.getAllTags().find((t) => t.name === tagName);
+      const color = tag ? tagColors[tag.color % 8] : tagColors[0];
+      return `<span class="search-tag-chip" data-tag="${this.escapeHtml(tagName)}" style="border-left: 3px solid ${color};">
+        <span class="chip-name">${this.escapeHtml(displayName)}</span>
+        <span class="chip-remove" data-tag="${this.escapeHtml(tagName)}">&times;</span>
+      </span>`;
+    }).join('');
+
+    html += '<button class="search-tag-clear-all">清除</button>';
+    chipsContainer.innerHTML = html;
+
+    // 绑定移除单个标签
+    chipsContainer.querySelectorAll('.chip-remove').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const tagName = btn.getAttribute('data-tag');
+        this.trashSearchTags.delete(tagName);
+        this._updateTrashTagChips();
+        const dropdown = document.getElementById('trash-tag-dropdown');
+        if (dropdown && dropdown.style.display !== 'none') {
+          const filterInput = document.getElementById('trash-tag-filter-input');
+          this._renderTrashTagList(filterInput.value.trim().toLowerCase());
+        }
+        this.trashCurrentPage = 1;
+        this._renderTrashList();
+      });
+    });
+
+    // 绑定清除全部
+    chipsContainer.querySelector('.search-tag-clear-all')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.trashSearchTags.clear();
+      this._updateTrashTagChips();
+      const dropdown = document.getElementById('trash-tag-dropdown');
+      if (dropdown && dropdown.style.display !== 'none') {
+        const filterInput = document.getElementById('trash-tag-filter-input');
+        this._renderTrashTagList(filterInput.value.trim().toLowerCase());
+      }
+      this.trashCurrentPage = 1;
+      this._renderTrashList();
+    });
   }
 
   /** 渲染回收站列表 */
@@ -4132,9 +4346,9 @@ class UIController {
     const restoreAllBtn = document.getElementById('btn-restore-all');
     if (!list) return;
 
-    const trashFiles = this.fileManager.getTrashFiles();
+    const allTrashFiles = this.fileManager.getTrashFiles();
 
-    if (trashFiles.length === 0) {
+    if (allTrashFiles.length === 0) {
       list.innerHTML = '<div class="trash-empty">回收站为空</div>';
       infoEl.textContent = '';
       emptyBtn.style.display = 'none';
@@ -4145,14 +4359,46 @@ class UIController {
     emptyBtn.style.display = '';
     restoreAllBtn.style.display = '';
 
+    // 搜索过滤
+    let trashFiles = allTrashFiles;
+    const query = (this.trashSearchQuery || '').trim().toLowerCase();
+    const searchTags = this.trashSearchTags || new Set();
+
+    if (searchTags.size > 0) {
+      trashFiles = trashFiles.filter((f) =>
+        (f.tags || []).some((t) => {
+          for (const tag of searchTags) {
+            if (this.tagManager.isDescendantOrSelf(t, tag)) return true;
+          }
+          return false;
+        })
+      );
+    }
+
+    if (query) {
+      trashFiles = trashFiles.filter((f) =>
+        f.name.toLowerCase().includes(query) ||
+        (f.tags || []).some((t) => t.toLowerCase().includes(query))
+      );
+    }
+
     // 分页
-    const totalPages = Math.ceil(trashFiles.length / this.trashPageSize);
+    const totalPages = Math.max(1, Math.ceil(trashFiles.length / this.trashPageSize));
     if (this.trashCurrentPage > totalPages) this.trashCurrentPage = totalPages;
     const startIdx = (this.trashCurrentPage - 1) * this.trashPageSize;
     const pageFiles = trashFiles.slice(startIdx, startIdx + this.trashPageSize);
 
-    infoEl.textContent = `共 ${trashFiles.length} 个文件` +
-      (totalPages > 1 ? ` · 第 ${this.trashCurrentPage}/${totalPages} 页` : '');
+    const hasFilter = query || searchTags.size > 0;
+    infoEl.textContent = hasFilter
+      ? `匹配 ${trashFiles.length}/${allTrashFiles.length} 个文件` +
+        (totalPages > 1 ? ` · 第 ${this.trashCurrentPage}/${totalPages} 页` : '')
+      : `共 ${trashFiles.length} 个文件` +
+        (totalPages > 1 ? ` · 第 ${this.trashCurrentPage}/${totalPages} 页` : '');
+
+    if (trashFiles.length === 0) {
+      list.innerHTML = '<div class="trash-empty">没有匹配的文件</div>';
+      return;
+    }
 
     list.innerHTML = pageFiles.map((f) => {
       const deletedStr = this.formatTime(f.deletedTime);
