@@ -624,6 +624,9 @@ class UIController {
     // 已安装应用列表缓存（用于模糊搜索）
     this.installedApps = [];
 
+    // 平台检测: 'mac', 'win', 'linux'
+    this.platform = this._detectPlatform();
+
     // 文件详细信息缓存 { path: { size, createdTime, modifiedTime, ... } }
     this.fileInfoCache = {};
 
@@ -648,6 +651,60 @@ class UIController {
     this.render();
     // 异步加载已安装应用列表（不阻塞主流程）
     this.loadInstalledApps();
+    // 根据平台更新 UI 文本
+    this._applyPlatformUI();
+  }
+
+  /**
+   * 检测当前操作系统平台
+   * @returns {'mac'|'win'|'linux'}
+   */
+  _detectPlatform() {
+    const ua = navigator.userAgent || '';
+    if (/Windows/i.test(ua)) return 'win';
+    if (/Mac/i.test(ua)) return 'mac';
+    return 'linux';
+  }
+
+  /**
+   * 根据平台动态更新 UI 元素
+   */
+  _applyPlatformUI() {
+    // 更新批量打开方式下拉中的应用名
+    const batchOpenWithDropdown = document.getElementById('batch-open-with-dropdown');
+    if (batchOpenWithDropdown && this.platform === 'win') {
+      // 替换 macOS 专属应用选项
+      const items = batchOpenWithDropdown.querySelectorAll('.batch-open-with-item');
+      items.forEach((item) => {
+        const app = item.getAttribute('data-app');
+        if (app === 'Terminal') { item.textContent = '命令提示符'; item.setAttribute('data-app', 'cmd'); }
+        else if (app === 'iTerm') { item.textContent = 'PowerShell'; item.setAttribute('data-app', 'PowerShell'); }
+        else if (app === 'TextEdit') { item.textContent = '记事本'; item.setAttribute('data-app', 'notepad'); }
+        else if (app === 'Preview') { item.textContent = '照片查看器'; item.setAttribute('data-app', 'mspaint'); }
+      });
+    }
+
+    // 更新终端下拉
+    const batchTerminalDropdown = document.getElementById('batch-terminal-dropdown');
+    if (batchTerminalDropdown && this.platform === 'win') {
+      const defaultItem = batchTerminalDropdown.querySelector('.batch-terminal-item');
+      if (defaultItem) {
+        defaultItem.textContent = '命令提示符 (CMD)';
+        defaultItem.setAttribute('data-terminal', 'cmd');
+      }
+    }
+
+    // 更新手动路径输入框的 placeholder
+    const manualPathInput = document.getElementById('manual-path-input');
+    if (manualPathInput && this.platform === 'win') {
+      manualPathInput.placeholder = '输入文件路径，每行一个\n例如：\nC:\\Users\\xxx\\documents\\file1.pdf\nC:\\Users\\xxx\\documents\\file2.txt\n\n也支持输入目录路径，例如：\nC:\\Users\\xxx\\documents\\myFolder\\';
+    }
+
+    // 更新目录路径输入框的 placeholder
+    const dirManualInput = document.getElementById('dir-manual-input');
+    if (dirManualInput && this.platform === 'win') {
+      dirManualInput.placeholder = '输入目录路径，如 C:\\Users\\xxx\\documents\\';
+    }
   }
 
   /**
@@ -2003,7 +2060,9 @@ class UIController {
 
   /** 添加单个文件路径到待处理列表 */
   _addSinglePath(cleanPath) {
-    const parts = cleanPath.split('/');
+    // 统一路径分隔符为 /（用于标签解析），但保留原始路径
+    const normalizedPath = cleanPath.replace(/\\/g, '/');
+    const parts = normalizedPath.split('/');
     const fileName = parts[parts.length - 1];
     const dirPath = parts.length > 1 ? parts.slice(0, parts.length - 1).join('/') : '';
     const fullPath = cleanPath;
@@ -3089,7 +3148,9 @@ class UIController {
 
     // 标签路径就是目录路径，加上文件名
     if (bestTag) {
-      return '/' + bestTag + '/' + file.name;
+      // Windows 路径不以 / 开头，macOS/Linux 以 / 开头
+      const prefix = (this.platform === 'win') ? '' : '/';
+      return prefix + bestTag + '/' + file.name;
     }
 
     return file.name;
@@ -3315,8 +3376,15 @@ class UIController {
 
     // 只有真实路径才可靠
     if (file.path) {
-      const lastSlash = file.path.lastIndexOf('/');
-      return lastSlash > 0 ? file.path.substring(0, lastSlash) : '/';
+      // 兼容 Windows \ 和 Unix / 路径分隔符
+      const lastSlash = Math.max(file.path.lastIndexOf('/'), file.path.lastIndexOf('\\'));
+      if (lastSlash <= 0) {
+        // Windows 盘符路径如 "C:\file.txt" → lastSlash = 2，取 "C:\"
+        const colonIdx = file.path.indexOf(':');
+        if (colonIdx === 1) return file.path.substring(0, 3); // "C:\"
+        return '/';
+      }
+      return file.path.substring(0, lastSlash);
     }
 
     return '';
@@ -3364,10 +3432,15 @@ class UIController {
     let current = dirPath;
     // 最多往上找 10 级，防止死循环
     for (let i = 0; i < 10; i++) {
-      const lastSlash = current.lastIndexOf('/');
-      if (lastSlash <= 0) return null; // 到根目录了
+      // 兼容 Windows \ 和 Unix / 路径分隔符
+      const lastSlash = Math.max(current.lastIndexOf('/'), current.lastIndexOf('\\'));
+      if (lastSlash <= 0) {
+        // Windows 盘符根目录 "C:\" 场景
+        if (current.length >= 2 && current[1] === ':') return null;
+        return null; // 到根目录了
+      }
       current = current.substring(0, lastSlash);
-      if (!current) return null;
+      if (!current || (current.length === 2 && current[1] === ':')) return null;
       try {
         // 用 listDir 来检测目录是否存在
         const resp = await this.sendNativeAction('listDir', { path: current });
@@ -3385,9 +3458,10 @@ class UIController {
   /**
    * 在文件所在目录打开终端
    * @param {string} fileId 文件ID
-   * @param {string} [termApp='Terminal'] 终端应用名
+   * @param {string} [termApp] 终端应用名，默认根据平台选择
    */
-  async openTerminalById(fileId, termApp = 'Terminal') {
+  async openTerminalById(fileId, termApp) {
+    if (!termApp) termApp = this.platform === 'win' ? 'cmd' : 'Terminal';
     const file = this.fileManager.files.find((f) => f.id === fileId);
     if (!file) return;
 
@@ -4005,36 +4079,65 @@ class UIController {
    * 根据文件扩展名返回推荐的打开应用列表
    */
   getOpenWithApps(ext) {
-    // 通用编辑器
+    const isMac = this.platform === 'mac';
+    const isWin = this.platform === 'win';
+
+    // 通用编辑器（跨平台）
     const editors = [
       { app: 'Visual Studio Code', label: 'VS Code' },
       { app: 'Cursor', label: 'Cursor' },
       { app: 'Sublime Text', label: 'Sublime Text' },
     ];
-    const textEdit = { app: 'TextEdit', label: '文本编辑' };
-    const terminal = { app: 'Terminal', label: '终端' };
-    const iterm = { app: 'iTerm', label: 'iTerm2' };
-    const preview = { app: 'Preview', label: '预览' };
+
+    // 平台特定应用
+    const textEdit = isMac ? { app: 'TextEdit', label: '文本编辑' }
+      : isWin ? { app: 'notepad', label: '记事本' }
+      : { app: 'gedit', label: '文本编辑器' };
+
+    const terminal = isMac ? { app: 'Terminal', label: '终端' }
+      : isWin ? { app: 'cmd', label: '命令提示符' }
+      : { app: 'x-terminal-emulator', label: '终端' };
+
+    const altTerminal = isMac ? { app: 'iTerm', label: 'iTerm2' }
+      : isWin ? { app: 'PowerShell', label: 'PowerShell' }
+      : { app: 'gnome-terminal', label: 'GNOME 终端' };
+
+    const imageViewer = isMac ? { app: 'Preview', label: '预览' }
+      : isWin ? { app: 'mspaint', label: '画图' }
+      : { app: 'eog', label: '图像查看器' };
+
     const chrome = { app: 'Google Chrome', label: 'Chrome' };
-    const safari = { app: 'Safari', label: 'Safari' };
-    const finder = { app: 'Finder', label: 'Finder' };
-    const numbers = { app: 'Numbers', label: 'Numbers' };
-    const pages = { app: 'Pages', label: 'Pages' };
-    const keynote = { app: 'Keynote', label: 'Keynote' };
+
+    const browser2 = isMac ? { app: 'Safari', label: 'Safari' }
+      : isWin ? { app: 'msedge', label: 'Edge' }
+      : { app: 'firefox', label: 'Firefox' };
+
+    const fileManager = isMac ? { app: 'Finder', label: 'Finder' }
+      : isWin ? { app: 'explorer', label: '资源管理器' }
+      : { app: 'nautilus', label: '文件管理器' };
+
+    const spreadsheet = isMac ? { app: 'Numbers', label: 'Numbers' }
+      : { app: 'Microsoft Excel', label: 'Excel' };
+
+    const wordProcessor = isMac ? { app: 'Pages', label: 'Pages' }
+      : { app: 'Microsoft Word', label: 'Word' };
+
+    const presentation = isMac ? { app: 'Keynote', label: 'Keynote' }
+      : { app: 'Microsoft PowerPoint', label: 'PowerPoint' };
 
     const extLower = (ext || '').toLowerCase();
 
     // Shell/脚本类
-    if (['sh', 'bash', 'zsh', 'command', 'tool'].includes(extLower)) {
-      return [terminal, iterm, ...editors, textEdit];
+    if (['sh', 'bash', 'zsh', 'command', 'tool'].includes(extLower) || (isWin && ['bat', 'cmd', 'ps1'].includes(extLower))) {
+      return [terminal, altTerminal, ...editors, textEdit];
     }
     // Python
     if (['py', 'pyw'].includes(extLower)) {
-      return [terminal, iterm, ...editors, textEdit];
+      return [terminal, altTerminal, ...editors, textEdit];
     }
     // Web 文件
     if (['html', 'htm', 'xhtml'].includes(extLower)) {
-      return [chrome, safari, ...editors, textEdit];
+      return [chrome, browser2, ...editors, textEdit];
     }
     // CSS / JS / TS 等前端代码
     if (['css', 'scss', 'less', 'js', 'jsx', 'ts', 'tsx', 'vue', 'svelte'].includes(extLower)) {
@@ -4050,38 +4153,45 @@ class UIController {
     }
     // 图片
     if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'webp', 'ico', 'svg'].includes(extLower)) {
-      return [preview, chrome, { app: 'Photos', label: '照片' }, ...editors];
+      return [imageViewer, chrome, { app: isMac ? 'Photos' : isWin ? 'ms-photos:' : 'eog', label: '照片' }, ...editors];
     }
     // PDF
     if (extLower === 'pdf') {
-      return [preview, chrome, safari];
+      if (isWin) return [chrome, { app: 'AcroRd32', label: 'Adobe Reader' }, browser2];
+      return [imageViewer, chrome, browser2];
     }
     // Excel / 表格
     if (['xlsx', 'xls', 'numbers'].includes(extLower)) {
-      return [numbers, { app: 'Microsoft Excel', label: 'Excel' }, ...editors];
+      return [spreadsheet, ...(isMac ? [{ app: 'Microsoft Excel', label: 'Excel' }] : []), ...editors];
     }
     // Word / 文档
     if (['doc', 'docx', 'pages'].includes(extLower)) {
-      return [pages, { app: 'Microsoft Word', label: 'Word' }, textEdit, preview];
+      return [wordProcessor, ...(isMac ? [{ app: 'Microsoft Word', label: 'Word' }] : []), textEdit, imageViewer];
     }
     // PPT / 演示文稿
     if (['ppt', 'pptx', 'key'].includes(extLower)) {
-      return [keynote, { app: 'Microsoft PowerPoint', label: 'PowerPoint' }, preview];
+      return [presentation, ...(isMac ? [{ app: 'Microsoft PowerPoint', label: 'PowerPoint' }] : []), imageViewer];
     }
     // 音频
     if (['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a'].includes(extLower)) {
-      return [{ app: 'Music', label: '音乐' }, { app: 'QuickTime Player', label: 'QuickTime' }, { app: 'VLC', label: 'VLC' }];
+      if (isWin) return [{ app: 'wmplayer', label: 'Windows Media Player' }, { app: 'VLC', label: 'VLC' }];
+      if (isMac) return [{ app: 'Music', label: '音乐' }, { app: 'QuickTime Player', label: 'QuickTime' }, { app: 'VLC', label: 'VLC' }];
+      return [{ app: 'VLC', label: 'VLC' }, { app: 'rhythmbox', label: 'Rhythmbox' }];
     }
     // 视频
     if (['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm'].includes(extLower)) {
-      return [{ app: 'QuickTime Player', label: 'QuickTime' }, { app: 'IINA', label: 'IINA' }, { app: 'VLC', label: 'VLC' }];
+      if (isWin) return [{ app: 'wmplayer', label: 'Windows Media Player' }, { app: 'VLC', label: 'VLC' }, { app: 'PotPlayer', label: 'PotPlayer' }];
+      if (isMac) return [{ app: 'QuickTime Player', label: 'QuickTime' }, { app: 'IINA', label: 'IINA' }, { app: 'VLC', label: 'VLC' }];
+      return [{ app: 'VLC', label: 'VLC' }, { app: 'mpv', label: 'mpv' }];
     }
     // 压缩包
     if (['zip', 'tar', 'gz', 'rar', '7z', 'bz2', 'xz', 'tgz'].includes(extLower)) {
-      return [{ app: 'Archive Utility', label: '归档实用工具' }, { app: 'The Unarchiver', label: 'The Unarchiver' }, finder];
+      if (isWin) return [{ app: '7zFM', label: '7-Zip' }, { app: 'WinRAR', label: 'WinRAR' }, fileManager];
+      if (isMac) return [{ app: 'Archive Utility', label: '归档实用工具' }, { app: 'The Unarchiver', label: 'The Unarchiver' }, fileManager];
+      return [{ app: 'file-roller', label: '归档管理器' }, fileManager];
     }
     // 默认：编辑器 + 文本编辑
-    return [...editors, textEdit, preview, chrome];
+    return [...editors, textEdit, imageViewer, chrome];
   }
 
   getFileExtension(filename) {

@@ -32,13 +32,27 @@
 1. 确保已安装 **Python 3**
 2. 在 `chrome://extensions/` 页面找到 **Workspace Tags** 扩展的 **ID**（一串字母数字字符串）
 3. 运行安装脚本：
+
+   **macOS / Linux：**
    ```bash
    cd workspace-tags/native-host
    bash install.sh <你的扩展ID>
    ```
+
+   **Windows（以管理员身份运行 CMD）：**
+   ```cmd
+   cd workspace-tags\native-host
+   install.bat <你的扩展ID>
+   ```
+
+   > Windows 安装脚本会自动完成以下操作：
+   > - 查找 Python 路径并生成 `run_host.bat` 启动包装器
+   > - 生成 Native Messaging Host 的 JSON manifest 文件到 `%LOCALAPPDATA%\Google\Chrome\User Data\NativeMessagingHosts\`
+   > - 写入注册表 `HKCU\SOFTWARE\Google\Chrome\NativeMessagingHosts\`
+
 4. 重新加载 Chrome 扩展
 
-> **注意**：安装脚本目前支持 macOS。Native Host 用于让扩展能够读取指定路径下的文件列表。
+> **注意**：支持 macOS、Windows 和 Linux。Native Host 用于让扩展能够读取指定路径下的文件列表、打开文件、在终端中打开目录、重命名文件等。
 
 ## 🚀 使用指南
 
@@ -66,7 +80,8 @@ workspace-tags/
 ├── background.js      # 后台脚本（Native Messaging 通信）
 ├── native-host/       # Native Messaging Host（本地文件读取）
 │   ├── read_dir.py    # Python 脚本，读取目录内容
-│   └── install.sh     # 安装脚本（注册 Native Host）
+│   ├── install.sh     # 安装脚本 - macOS/Linux（注册 Native Host）
+│   └── install.bat    # 安装脚本 - Windows（注册 Native Host）
 ├── icons/             # 插件图标
 └── README.md
 ```

@@ -329,9 +329,26 @@ def open_terminal_at(dir_path, app='Terminal'):
                 return {"success": True, "path": dir_path, "app": "Terminal"}
 
         elif system == 'Windows':
-            # Windows: 打开 cmd 或 PowerShell
-            if 'powershell' in app.lower():
+            app_lower = app.lower()
+            # Windows Terminal
+            if 'windows terminal' in app_lower or app_lower == 'wt':
+                subprocess.Popen(['wt', '-d', dir_path])
+            # PowerShell
+            elif 'powershell' in app_lower:
                 subprocess.Popen(['powershell', '-NoExit', '-Command', f'cd "{dir_path}"'])
+            # Git Bash
+            elif 'git bash' in app_lower or 'git-bash' in app_lower:
+                git_bash_paths = [
+                    os.path.expandvars(r'%ProgramFiles%\Git\git-bash.exe'),
+                    os.path.expandvars(r'%ProgramFiles(x86)%\Git\git-bash.exe'),
+                ]
+                for p in git_bash_paths:
+                    if os.path.exists(p):
+                        subprocess.Popen([p, f'--cd={dir_path}'])
+                        break
+                else:
+                    subprocess.Popen(['cmd', '/K', f'cd /d "{dir_path}"'])
+            # CMD（默认）
             else:
                 subprocess.Popen(['cmd', '/K', f'cd /d "{dir_path}"'])
             return {"success": True, "path": dir_path, "app": app}
