@@ -1676,8 +1676,46 @@ class UIController {
   async confirmDeleteTag() {
     if (!this.pendingDeleteTag) return;
 
+    // 先收集要删除标签的同步目录映射，用于后续清理文件
+    const syncDirPaths = [];
+    for (const [key, val] of Object.entries(this.syncDirMappings)) {
+      if (key === this.pendingDeleteTag || key.startsWith(this.pendingDeleteTag + '/')) {
+        syncDirPaths.push(val);
+      }
+    }
+
     const removedNames = await this.tagManager.removeTag(this.pendingDeleteTag);
     const orphanCount = await this.fileManager.removeTagFromAllFiles(removedNames);
+
+    // 如果有同步目录映射，清理该目录路径下的文件记录
+    let syncFileCleanCount = 0;
+    if (syncDirPaths.length > 0) {
+      const now = Date.now();
+      const cleanPaths = syncDirPaths.map(p => p.replace(/\/+$/, ''));
+      const filesToRemove = [];
+
+      this.fileManager.files.forEach((file) => {
+        if (!file.path) return;
+        // 检查文件路径是否属于被删除的同步目录
+        for (const dirPath of cleanPaths) {
+          if (file.path === dirPath || file.path.startsWith(dirPath + '/')) {
+            filesToRemove.push(file);
+            break;
+          }
+        }
+      });
+
+      if (filesToRemove.length > 0) {
+        const removeIds = new Set(filesToRemove.map(f => f.id));
+        filesToRemove.forEach(f => {
+          f.deletedTime = now;
+          this.fileManager.trash.push(f);
+        });
+        this.fileManager.files = this.fileManager.files.filter(f => !removeIds.has(f.id));
+        syncFileCleanCount = filesToRemove.length;
+        await Promise.all([this.fileManager.save(), this.fileManager.saveTrash()]);
+      }
+    }
 
     // 从选中的筛选标签中移除已删除的标签
     for (const t of [...this.activeTags]) {
@@ -1700,7 +1738,9 @@ class UIController {
 
     this.closeModal('modal-confirm');
     let msg = `标签 "${this.pendingDeleteTag}" 已删除`;
-    if (orphanCount > 0) {
+    if (syncFileCleanCount > 0) {
+      msg += `，${syncFileCleanCount} 个同步目录文件已移入回收站`;
+    } else if (orphanCount > 0) {
       msg += `，${orphanCount} 个无标签文件已移入回收站`;
     }
     this.showToast(msg, 'info');
@@ -3014,16 +3054,24 @@ class UIController {
       return;
     }
 
-    const { tagName: rootTagName, dirPath } = syncInfo;
+    const { tagName: rootTagName, dirPath: rootDirPath, subPath } = syncInfo;
+    console.log('[syncDirFiles] tagName:', tagName, 'rootTagName:', rootTagName, 'rootDirPath:', rootDirPath, 'subPath:', subPath);
 
-    this.showToast('正在同步目录文件...', 'info');
+    // 如果是子标签触发的同步，自动转为根标签同步
+    if (subPath) {
+      const displayRootTag = this.tagManager.getDisplayName(rootTagName);
+      this.showToast(`正在通过根标签「${displayRootTag}」同步整个目录...`, 'info');
+    } else {
+      this.showToast('正在同步目录文件...', 'info');
+    }
 
     try {
       // 1. 通过 Native Host 分页读取目录
-      const firstPage = await this.sendNativeAction('listDirPaged', { path: dirPath, page: 0 });
+      const firstPage = await this.sendNativeAction('listDirPaged', { path: rootDirPath, page: 0 }, 60000);
+      console.log('[syncDirFiles] firstPage:', firstPage);
 
-      if ((!firstPage.files || firstPage.files.length === 0) &&
-          (!firstPage.dirs || firstPage.dirs.length === 0)) {
+      if (!firstPage || ((!firstPage.files || firstPage.files.length === 0) &&
+          (!firstPage.dirs || firstPage.dirs.length === 0))) {
         this.showToast('目录为空或无可读文件', 'error');
         return;
       }
@@ -3037,7 +3085,7 @@ class UIController {
         this.showToast(`正在扫描目录... (共 ${firstPage.totalCount} 个文件, 第 1/${totalPages} 页)`, 'info');
         for (let page = 1; page < totalPages; page++) {
           try {
-            const pageResp = await this.sendNativeAction('listDirPaged', { path: dirPath, page });
+            const pageResp = await this.sendNativeAction('listDirPaged', { path: rootDirPath, page }, 60000);
             if (pageResp && pageResp.files) {
               allFiles = allFiles.concat(pageResp.files);
             }
@@ -3048,20 +3096,24 @@ class UIController {
         }
       }
 
-      // 2. 构建当前已有文件的路径集合（用于快速对比）
-      const existingPaths = new Set();
+      // 2. 构建当前已有文件的路径→文件对象映射（用于快速对比和补标签）
+      const existingFileMap = new Map();
       for (const f of this.fileManager.files) {
-        if (f.path) existingPaths.add(f.path);
+        if (f.path) existingFileMap.set(f.path, f);
       }
 
       // 3. 构建当前已有标签集合（用于发现新增目录）
       const existingTagNames = new Set(this.tagManager.tags.map((t) => t.name));
 
-      // 4. 收集新增文件和新增目录标签
+      // 4. 收集新增文件、需补标签的文件、新增目录标签
       const dateTag = FileManager.getDateTag();
       const newDirSet = new Set();
       const newFileEntries = [];
-      const cleanBase = dirPath.replace(/\/+$/, '');
+      const tagFixEntries = []; // 已存在但缺少目录标签的文件
+      const cleanBase = rootDirPath.replace(/\/+$/, '');
+
+      console.log('[syncDirFiles] cleanBase:', cleanBase, 'rootTagName:', rootTagName);
+      console.log('[syncDirFiles] allFiles count:', allFiles.length, 'allDirs count:', allDirs.length);
 
       // 4a. 从 dirs 列表中发现新增目录（包括空目录）
       for (const relDir of allDirs) {
@@ -3077,7 +3129,7 @@ class UIController {
         }
       }
 
-      // 4b. 从文件列表中收集新增文件
+      // 4b. 从文件列表中收集新增文件和需要补标签的文件
       for (const relPath of allFiles) {
         const parts = relPath.split('/');
         const fileName = parts[parts.length - 1];
@@ -3085,8 +3137,19 @@ class UIController {
         // 拼出绝对路径
         const absolutePath = `${cleanBase}/${parts.slice(1).join('/') || fileName}`;
 
-        // 跳过已存在的文件
-        if (existingPaths.has(absolutePath)) continue;
+        // 文件所在目录标签
+        const dirSubPath = parts.length > 1 ? parts.slice(0, parts.length - 1).join('/') : '';
+        const fileDirTag = dirSubPath ? `${rootTagName}/${dirSubPath}` : rootTagName;
+
+        // 检查文件是否已存在
+        const existingFile = existingFileMap.get(absolutePath);
+        if (existingFile) {
+          // 文件已存在，检查是否缺少目录标签
+          if (!existingFile.tags || !existingFile.tags.includes(fileDirTag)) {
+            tagFixEntries.push({ file: existingFile, tag: fileDirTag });
+          }
+          continue;
+        }
 
         // 收集文件所在的所有目录层级
         for (let i = 1; i < parts.length; i++) {
@@ -3097,10 +3160,6 @@ class UIController {
           }
         }
 
-        // 文件所在目录标签
-        const dirSubPath = parts.length > 1 ? parts.slice(0, parts.length - 1).join('/') : '';
-        const fileDirTag = dirSubPath ? `${rootTagName}/${dirSubPath}` : rootTagName;
-
         newFileEntries.push({
           name: fileName,
           tags: [fileDirTag, dateTag],
@@ -3108,7 +3167,9 @@ class UIController {
         });
       }
 
-      if (newFileEntries.length === 0 && newDirSet.size === 0) {
+      console.log('[syncDirFiles] newFiles:', newFileEntries.length, 'tagFixes:', tagFixEntries.length, 'newDirs:', newDirSet.size);
+
+      if (newFileEntries.length === 0 && newDirSet.size === 0 && tagFixEntries.length === 0) {
         this.showToast('目录无新增文件和目录，已是最新状态', 'success');
         return;
       }
@@ -3130,12 +3191,28 @@ class UIController {
         });
       }
 
+      // 6b. 为已存在但缺少标签的文件补上目录标签
+      let tagFixCount = 0;
+      if (tagFixEntries.length > 0) {
+        for (const { file, tag } of tagFixEntries) {
+          if (!file.tags) file.tags = [];
+          if (!file.tags.includes(tag)) {
+            file.tags.push(tag);
+            tagFixCount++;
+          }
+        }
+        if (tagFixCount > 0) {
+          await this.fileManager.save();
+        }
+      }
+
       // 7. 更新 UI
       this.expandedTags.add(rootTagName);
 
       const parts = [];
       if (newFileCount > 0) parts.push(`新增 ${newFileCount} 个文件`);
       if (newDirTagCount > 0) parts.push(`新增 ${newDirTagCount} 个目录标签`);
+      if (tagFixCount > 0) parts.push(`补充 ${tagFixCount} 个文件的标签关联`);
       this.showToast(`同步完成：${parts.join('，')}`, 'success');
 
     } catch (err) {
