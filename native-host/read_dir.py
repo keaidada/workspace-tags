@@ -27,6 +27,18 @@ def read_message():
 def send_message(message):
     """向 stdout 写入 Chrome Native Messaging 格式的消息"""
     encoded = json.dumps(message, ensure_ascii=False).encode('utf-8')
+    # Chrome Native Messaging 限制单条消息最大 1MB
+    if len(encoded) > 1024 * 1024:
+        sys.stderr.write(f"[WARN] Message too large ({len(encoded)} bytes), truncating\n")
+        sys.stderr.flush()
+        # 返回错误消息而不是发送超大消息导致崩溃
+        error_msg = json.dumps({
+            "error": f"响应数据过大 ({len(encoded)} 字节)，请尝试选择更小的目录或子目录"
+        }, ensure_ascii=False).encode('utf-8')
+        sys.stdout.buffer.write(struct.pack('=I', len(error_msg)))
+        sys.stdout.buffer.write(error_msg)
+        sys.stdout.buffer.flush()
+        return
     sys.stdout.buffer.write(struct.pack('=I', len(encoded)))
     sys.stdout.buffer.write(encoded)
     sys.stdout.buffer.flush()
@@ -45,11 +57,21 @@ def list_directory(dir_path):
 
     root_name = os.path.basename(dir_path)
     files = []
+
+    # 跳过的目录名
+    skip_dirs = {
+        'node_modules', '__pycache__', '.git', '.svn', '.hg',
+        'venv', '.venv', 'env', '.env',
+        'dist', 'build', '.next', '.nuxt',
+        '.cache', '.tmp', '.idea', '.vscode',
+        'vendor', 'Pods', '.gradle',
+        'target', 'out', 'bin', 'obj',
+    }
     
     try:
         for dirpath, dirnames, filenames in os.walk(dir_path):
-            # 跳过隐藏目录
-            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            # 跳过隐藏目录和常见的无意义大目录
+            dirnames[:] = [d for d in dirnames if not d.startswith('.') and d not in skip_dirs]
             
             for filename in filenames:
                 # 跳过隐藏文件
@@ -70,7 +92,7 @@ def list_directory(dir_path):
     return {"files": files, "rootName": root_name, "totalCount": len(files)}
 
 
-def list_directory_paged(dir_path, page=0, page_size=5000, create_if_not_exists=False):
+def list_directory_paged(dir_path, page=0, page_size=2000, create_if_not_exists=False):
     """
     分页版目录遍历。先完整扫描，然后按页返回文件列表。
     每页最多 page_size 个文件，确保单条消息不超过 Chrome 1MB 限制。
@@ -100,9 +122,20 @@ def list_directory_paged(dir_path, page=0, page_size=5000, create_if_not_exists=
     all_files = []
     all_dirs = []
 
+    # 跳过的目录名（这些目录通常包含大量无意义的文件）
+    skip_dirs = {
+        'node_modules', '__pycache__', '.git', '.svn', '.hg',
+        'venv', '.venv', 'env', '.env',
+        'dist', 'build', '.next', '.nuxt',
+        '.cache', '.tmp', '.idea', '.vscode',
+        'vendor', 'Pods', '.gradle',
+        'target', 'out', 'bin', 'obj',
+    }
+
     try:
         for dp, dirnames, filenames in os.walk(dir_path):
-            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            # 跳过隐藏目录和常见的无意义大目录
+            dirnames[:] = [d for d in dirnames if not d.startswith('.') and d not in skip_dirs]
             # 收集子目录（相对于上级目录的路径，与文件路径格式一致）
             for dirname in dirnames:
                 full_dir = os.path.join(dp, dirname)
@@ -131,15 +164,32 @@ def list_directory_paged(dir_path, page=0, page_size=5000, create_if_not_exists=
         "files": all_files[start:end],
         "rootName": root_name,
         "totalCount": total_count,
+        "totalDirCount": len(all_dirs),
         "page": page,
         "totalPages": total_pages,
         "absolutePath": dir_path,
         "created": created,
     }
 
-    # 仅在第一页返回完整目录列表（避免重复传输）
+    # 仅在第一页返回目录列表，如果太大则分批（估算每条路径平均 60 字节）
     if page == 0:
-        result["dirs"] = all_dirs
+        # 预估 files 部分大小，剩余空间给 dirs
+        files_size = sum(len(f) for f in result["files"]) + len(result["files"]) * 5
+        remaining = 800000 - files_size  # 预留 800KB，留 200KB 给其他字段
+        if remaining > 0:
+            dirs_size = 0
+            dirs_to_send = []
+            for d in all_dirs:
+                entry_size = len(d) + 5  # 引号、逗号等开销
+                if dirs_size + entry_size > remaining:
+                    break
+                dirs_size += entry_size
+                dirs_to_send.append(d)
+            result["dirs"] = dirs_to_send
+            result["dirsTruncated"] = len(dirs_to_send) < len(all_dirs)
+        else:
+            result["dirs"] = []
+            result["dirsTruncated"] = len(all_dirs) > 0
 
     return result
 

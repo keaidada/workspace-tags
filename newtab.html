@@ -104,6 +104,9 @@
               <span class="sort-label">添加时间 ↓</span>
             </button>
             <div class="sort-dropdown" id="sort-dropdown" style="display:none;">
+              <div class="sort-dropdown-item" data-field="depth" data-dir="asc">层级 ↑ 浅→深</div>
+              <div class="sort-dropdown-item" data-field="depth" data-dir="desc">层级 ↓ 深→浅</div>
+              <div class="sort-dropdown-divider"></div>
               <div class="sort-dropdown-item" data-field="addedTime" data-dir="desc">添加时间 ↓ 最新优先</div>
               <div class="sort-dropdown-item" data-field="addedTime" data-dir="asc">添加时间 ↑ 最早优先</div>
               <div class="sort-dropdown-divider"></div>
@@ -121,6 +124,27 @@
               <div class="sort-dropdown-divider"></div>
               <div class="sort-dropdown-item" data-field="fileType" data-dir="asc">文件类型 ↑ A→Z</div>
               <div class="sort-dropdown-item" data-field="fileType" data-dir="desc">文件类型 ↓ Z→A</div>
+            </div>
+          </div>
+          <div class="sort-dropdown-wrapper">
+            <button id="btn-depth" class="toolbar-btn" title="层级范围">
+              <svg viewBox="0 0 24 24" width="18" height="18">
+                <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+              </svg>
+              <span class="depth-label">所有层级</span>
+            </button>
+            <div class="sort-dropdown depth-dropdown-panel" id="depth-dropdown" style="display:none;">
+              <div class="depth-select-row">
+                <select id="depth-op-select" class="depth-select">
+                  <option value="all">所有层级</option>
+                  <option value="=">=  等于</option>
+                  <option value="<=">≤  小于等于</option>
+                  <option value=">=">≥  大于等于</option>
+                </select>
+                <input type="number" id="depth-level-input" class="depth-input" min="1" max="100" value="1" disabled />
+                <span class="depth-unit">级</span>
+              </div>
+              <div class="depth-hint" id="depth-hint">显示当前标签及所有子标签的文件</div>
             </div>
           </div>
           <button id="btn-cleanup-files" class="toolbar-btn" title="检测并清理不存在的文件">

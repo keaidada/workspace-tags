@@ -52,9 +52,9 @@ class StorageService {
   static async saveFiles(files) { return this.set('files', files); }
   static async getTags() { return this.get('tags', []); }
   static async saveTags(tags) { return this.set('tags', tags); }
-  static async getSortOrder() { return this.get('sortOrder', 'desc'); }
+  static async getSortOrder() { return this.get('sortOrder', 'asc'); }
   static async saveSortOrder(v) { return this.set('sortOrder', v); }
-  static async getSortField() { return this.get('sortField', 'addedTime'); }
+  static async getSortField() { return this.get('sortField', 'depth'); }
   static async saveSortField(v) { return this.set('sortField', v); }
   static async getTrash() { return this.get('trash', []); }
   static async saveTrash(trash) { return this.set('trash', trash); }
@@ -506,26 +506,32 @@ class FileManager {
     return file;
   }
 
-  getFilteredFiles(activeTags, filterNoTag, searchQuery, sortOrder, tagDisplayMode, searchTags, sortField, fileInfoCache) {
+  getFilteredFiles(activeTags, filterNoTag, searchQuery, sortOrder, tagDisplayMode, searchTags, sortField, fileInfoCache, depthFilter) {
     let filtered = [...this.files];
 
     if (filterNoTag) {
-      // 根据当前标签显示模式判断"无标签"
-      // 自定义模式：没有自定义标签的文件算"无标签"
-      // 时间模式：没有时间标签的文件算"无标签"
       const isTimeTag = (t) => /^\d{6,8}$/.test(t.split('/')[0]);
       if (tagDisplayMode === 'time') {
         filtered = filtered.filter((f) => !f.tags || !f.tags.some((t) => isTimeTag(t)));
       } else {
-        // custom 模式（默认）
         filtered = filtered.filter((f) => !f.tags || !f.tags.some((t) => !isTimeTag(t)));
       }
     } else if (activeTags && activeTags.size > 0) {
       // 多标签筛选：文件需要匹配任意一个选中的标签（或其子标签）
+      // 层级定义：当前标签直属文件=1级，子级=2级，孙级=3级...
+      const df = depthFilter || { op: 'all', level: 1 };
       filtered = filtered.filter((f) =>
         f.tags.some((t) => {
           for (const tag of activeTags) {
-            if (this.tagManager.isDescendantOrSelf(t, tag)) return true;
+            if (!this.tagManager.isDescendantOrSelf(t, tag)) continue;
+            if (df.op !== 'all') {
+              // 当前标签自身=1级，子标签=2级，孙标签=3级...
+              const relDepth = t === tag ? 1 : t.substring(tag.length + 1).split('/').length + 1;
+              if (df.op === '=' && relDepth !== df.level) continue;
+              if (df.op === '<=' && relDepth > df.level) continue;
+              if (df.op === '>=' && relDepth < df.level) continue;
+            }
+            return true;
           }
           return false;
         })
@@ -553,12 +559,29 @@ class FileManager {
       );
     }
 
+    // 层级计算辅助函数（用于排序）
+    const calcMinDepth = (file) => {
+      if (!activeTags || activeTags.size === 0) return 0;
+      let min = Infinity;
+      for (const t of file.tags) {
+        for (const tag of activeTags) {
+          if (t === tag) { min = Math.min(min, 1); }
+          else if (t.startsWith(tag + '/')) {
+            min = Math.min(min, t.substring(tag.length + 1).split('/').length + 1);
+          }
+        }
+      }
+      return min === Infinity ? 9999 : min;
+    };
+
     filtered.sort((a, b) => {
-      const field = sortField || 'addedTime';
+      const field = sortField || 'depth';
       const cache = fileInfoCache || {};
       let diff = 0;
 
-      if (field === 'addedTime') {
+      if (field === 'depth') {
+        diff = calcMinDepth(a) - calcMinDepth(b);
+      } else if (field === 'addedTime') {
         diff = (a.addedTime || 0) - (b.addedTime || 0);
       } else if (field === 'name') {
         diff = naturalCompare(a.name.toLowerCase(), b.name.toLowerCase());
@@ -709,8 +732,9 @@ class UIController {
   constructor() {
     this.tagManager = new TagManager();
     this.fileManager = new FileManager(this.tagManager);
-    this.sortOrder = 'desc';
-    this.sortField = 'addedTime'; // addedTime, name, size, createdTime, modifiedTime, fileType
+    this.sortOrder = 'asc';
+    this.sortField = 'depth'; // depth, addedTime, name, size, createdTime, modifiedTime, fileType
+    this.depthFilter = { op: 'all', level: 1 }; // op: 'all'|'='|'<='|'>=', level: 1-5
     this.activeTags = new Set(); // 多选标签筛选, 空 = 全部
     this.filterNoTag = false;   // 筛选无标签文件
     this.searchQuery = '';
@@ -1021,19 +1045,50 @@ class UIController {
       document.querySelectorAll('.open-with-search-results').forEach((d) => { d.innerHTML = ''; d.style.display = 'none'; });
       document.querySelectorAll('.terminal-search-results').forEach((d) => { d.innerHTML = ''; d.style.display = 'none'; });
       document.getElementById('sort-dropdown').style.display = 'none';
+      document.getElementById('depth-dropdown').style.display = 'none';
     });
 
     // 排序
     document.getElementById('btn-sort').addEventListener('click', (e) => {
       e.stopPropagation();
+      document.getElementById('depth-dropdown').style.display = 'none';
       this.toggleSort();
     });
     document.getElementById('sort-dropdown').addEventListener('click', (e) => {
       e.stopPropagation();
       const item = e.target.closest('.sort-dropdown-item');
-      if (item) {
+      if (item && item.getAttribute('data-field')) {
         this.setSortOption(item.getAttribute('data-field'), item.getAttribute('data-dir'));
       }
+    });
+
+    // 层级范围
+    document.getElementById('btn-depth').addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.getElementById('sort-dropdown').style.display = 'none';
+      this.toggleDepthDropdown();
+    });
+    document.getElementById('depth-dropdown').addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+    document.getElementById('depth-op-select').addEventListener('change', (e) => {
+      const op = e.target.value;
+      document.getElementById('depth-level-input').disabled = op === 'all';
+      this.depthFilter.op = op;
+      this._updateDepthHint();
+      this.updateDepthButton();
+      this.currentPage = 1;
+      this.renderFileList();
+    });
+    document.getElementById('depth-level-input').addEventListener('input', (e) => {
+      let val = parseInt(e.target.value, 10);
+      if (isNaN(val) || val < 1) val = 1;
+      if (val > 100) val = 100;
+      this.depthFilter.level = val;
+      this._updateDepthHint();
+      this.updateDepthButton();
+      this.currentPage = 1;
+      this.renderFileList();
     });
 
     // 新建根标签
@@ -3307,13 +3362,51 @@ class UIController {
       dropdown.style.display = 'none';
       return;
     }
-    // 更新选中状态
     dropdown.querySelectorAll('.sort-dropdown-item').forEach((item) => {
       const field = item.getAttribute('data-field');
       const dir = item.getAttribute('data-dir');
       item.classList.toggle('active', field === this.sortField && dir === this.sortOrder);
     });
     dropdown.style.display = 'block';
+  }
+
+  toggleDepthDropdown() {
+    const dropdown = document.getElementById('depth-dropdown');
+    if (dropdown.style.display !== 'none') {
+      dropdown.style.display = 'none';
+      return;
+    }
+    // 同步下拉框的值
+    document.getElementById('depth-op-select').value = this.depthFilter.op;
+    document.getElementById('depth-level-input').value = this.depthFilter.level;
+    document.getElementById('depth-level-input').disabled = this.depthFilter.op === 'all';
+    this._updateDepthHint();
+    dropdown.style.display = 'block';
+  }
+
+  _updateDepthHint() {
+    const hint = document.getElementById('depth-hint');
+    const { op, level } = this.depthFilter;
+    const levelNames = { 1: '当前标签', 2: '子级', 3: '孙级', 4: '曾孙级', 5: '4级子标签' };
+    if (op === 'all') {
+      hint.textContent = '显示当前标签及所有子标签的文件';
+    } else if (op === '=') {
+      hint.textContent = `仅显示第 ${level} 级（${levelNames[level] || level + '级'}）的文件`;
+    } else if (op === '<=') {
+      hint.textContent = `显示 ${level} 级及以内的文件（1=当前标签，2=子级...）`;
+    } else if (op === '>=') {
+      hint.textContent = `显示第 ${level} 级及更深层级的文件`;
+    }
+  }
+
+  setDepthFilter(depth) {
+    if (typeof depth === 'number') {
+      this.depthFilter = depth === 0 ? { op: 'all', level: 1 } : { op: '<=', level: depth };
+    }
+    document.getElementById('depth-dropdown').style.display = 'none';
+    this.updateDepthButton();
+    this.currentPage = 1;
+    this.renderFileList();
   }
 
   async setSortOption(field, dir) {
@@ -3330,6 +3423,7 @@ class UIController {
   updateSortButton() {
     const label = document.querySelector('.sort-label');
     const fieldLabels = {
+      depth: '层级',
       addedTime: '添加时间',
       name: '文件名',
       size: '文件大小',
@@ -3339,6 +3433,17 @@ class UIController {
     };
     const dirSymbol = this.sortOrder === 'desc' ? '↓' : '↑';
     label.textContent = `${fieldLabels[this.sortField] || '添加时间'} ${dirSymbol}`;
+  }
+
+  updateDepthButton() {
+    const label = document.querySelector('.depth-label');
+    const { op, level } = this.depthFilter;
+    if (op === 'all') {
+      label.textContent = '所有层级';
+    } else {
+      const opSymbols = { '=': '=', '<=': '≤', '>=': '≥' };
+      label.textContent = `${opSymbols[op] || op} ${level}级`;
+    }
   }
 
   // ==========================================
@@ -3715,6 +3820,7 @@ class UIController {
     this.currentPage = 1;
     this.fileManager._invalidateCountsCache();
     this.updateSortButton();
+    this.updateDepthButton();
     this.renderSidebar();
     this.renderFileList();
     this.renderFooter();
@@ -3840,6 +3946,20 @@ class UIController {
         if (tag === '__all__' || tag === '__no_tag__') {
           this.setTagFilter(tag);
         } else {
+          // 点击标签时切换展开/折叠子级
+          const hasChildren = this.tagManager.getChildTags(tag).length > 0;
+          if (hasChildren) {
+            if (this.expandedTags.has(tag)) {
+              this.expandedTags.delete(tag);
+            } else {
+              this.expandedTags.add(tag);
+            }
+          }
+          // 如果已经是当前选中的标签，只刷新侧边栏（展开/折叠），不改变筛选
+          if (this.activeTags.size === 1 && this.activeTags.has(tag)) {
+            this.renderSidebar();
+            return;
+          }
           this.setTagFilter(tag, isCtrl);
         }
       });
@@ -3870,7 +3990,7 @@ class UIController {
 
   renderFileList() {
     const container = document.getElementById('file-list');
-    const allFilteredFiles = this.fileManager.getFilteredFiles(this.activeTags, this.filterNoTag, this.searchQuery, this.sortOrder, this.tagDisplayMode, this.searchTags, this.sortField, this.fileInfoCache);
+    const allFilteredFiles = this.fileManager.getFilteredFiles(this.activeTags, this.filterNoTag, this.searchQuery, this.sortOrder, this.tagDisplayMode, this.searchTags, this.sortField, this.fileInfoCache, this.depthFilter);
     const currentIds = new Set(allFilteredFiles.map((f) => f.id));
     for (const id of this.selectedFiles) {
       if (!currentIds.has(id)) this.selectedFiles.delete(id);
@@ -3921,11 +4041,13 @@ class UIController {
 
     const groups = this.groupFilesByDate(files);
     let html = '';
+    let fileIndex = startIdx; // 全局序号从当前页起始位置开始
 
     groups.forEach((group) => {
       html += `<div class="date-group-header">${group.label}</div>`;
       group.files.forEach((file) => {
-        html += this.renderFileCard(file);
+        fileIndex++;
+        html += this.renderFileCard(file, fileIndex);
       });
     });
 
@@ -4387,11 +4509,24 @@ class UIController {
             await this.fileManager.renameFileRecord(fileId, newName, result.newPath);
             // 清除旧路径的文件信息缓存
             delete this.fileInfoCache[file.path];
-            // 更新卡片上的 data 属性
+            // 更新卡片上的 data 属性和路径显示
             const card = nameEl.closest('.file-card');
             if (card) {
               card.setAttribute('data-filename', newName);
               card.setAttribute('data-filepath', result.newPath);
+              // 更新路径提示文本
+              const pathHint = card.querySelector('.file-path-hint');
+              if (pathHint) {
+                pathHint.textContent = result.newPath;
+                pathHint.title = result.newPath;
+              }
+              // 更新文件名 title
+              nameEl.title = result.newPath || newName;
+              // 清除文件详情缓存，让其重新加载
+              const detailEl = card.querySelector('.file-details');
+              if (detailEl) {
+                detailEl.innerHTML = '<span class="file-detail-loading">加载文件信息…</span>';
+              }
             }
             this.showToast(`文件已重命名: ${oldName} → ${newName}`, 'success');
             // 刷新文件信息
@@ -4772,7 +4907,7 @@ class UIController {
   }
 
   selectAllFiles() {
-    const allFilteredFiles = this.fileManager.getFilteredFiles(this.activeTags, this.filterNoTag, this.searchQuery, this.sortOrder, this.tagDisplayMode, this.searchTags, this.sortField, this.fileInfoCache);
+    const allFilteredFiles = this.fileManager.getFilteredFiles(this.activeTags, this.filterNoTag, this.searchQuery, this.sortOrder, this.tagDisplayMode, this.searchTags, this.sortField, this.fileInfoCache, this.depthFilter);
     // 只选当前页的文件
     const startIdx = (this.currentPage - 1) * this.pageSize;
     const endIdx = Math.min(startIdx + this.pageSize, allFilteredFiles.length);
@@ -5073,7 +5208,7 @@ class UIController {
     }
   }
 
-  renderFileCard(file) {
+  renderFileCard(file, index) {
     const ext = this.getFileExtension(file.name);
     const iconClass = this.getIconClass(ext);
     const time = this.formatTime(file.addedTime);
@@ -5083,6 +5218,26 @@ class UIController {
       return `<span class="file-tag color-${color}">${this.escapeHtml(tag)}</span>`;
     }).join('');
 
+    // 计算文件相对于选中标签的最小层级（1=当前标签，2=子级，3=孙级...）
+    let depthBadge = '';
+    if (this.activeTags.size > 0) {
+      let minDepth = Infinity;
+      for (const tag of file.tags) {
+        for (const activeTag of this.activeTags) {
+          if (tag === activeTag) {
+            minDepth = Math.min(minDepth, 1);
+          } else if (tag.startsWith(activeTag + '/')) {
+            const d = tag.substring(activeTag.length + 1).split('/').length + 1;
+            minDepth = Math.min(minDepth, d);
+          }
+        }
+      }
+      if (minDepth !== Infinity) {
+        const cls = minDepth <= 1 ? 'level-current' : minDepth === 2 ? 'level-child' : 'level-deep';
+        depthBadge = `<span class="file-depth-badge ${cls}">${minDepth}</span>`;
+      }
+    }
+
     // 推算文件的完整路径（从标签中获取目录信息，仅供显示）
     const filePath = this.getFilePath(file);
     // 真实目录路径（只在有 file.path 时才有值）
@@ -5090,6 +5245,10 @@ class UIController {
 
     return `
       <div class="file-card ${isSelected ? 'selected' : ''}" data-id="${file.id}" data-filepath="${this.escapeHtml(filePath)}" data-dirpath="${this.escapeHtml(dirPath)}" data-filename="${this.escapeHtml(file.name)}">
+        <div class="file-index-area">
+          <span class="file-index">${index}</span>
+          ${depthBadge}
+        </div>
         <input type="checkbox" class="file-checkbox" data-id="${file.id}" ${isSelected ? 'checked' : ''} />
         <div class="file-icon ${iconClass}">
           ${this.getFileEmoji(ext)}

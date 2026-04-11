@@ -29,7 +29,7 @@
   --radius-lg: 12px;
   --radius-xl: 16px;
   --transition: 150ms ease;
-  --sidebar-width: 260px;
+  --sidebar-width: 300px;
   --card-bg: #ffffff;
 }
 
@@ -749,6 +749,107 @@ html, body {
   margin: 4px 8px;
 }
 
+.depth-label {
+  font-size: 13px;
+}
+
+/* 层级选择面板 */
+.depth-dropdown-panel {
+  padding: 10px 12px !important;
+  min-width: 240px;
+}
+
+.depth-select-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.depth-select {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+  appearance: auto;
+}
+
+.depth-select:focus {
+  border-color: var(--primary);
+}
+
+.depth-select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.depth-input {
+  width: 56px;
+  padding: 6px 4px 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+.depth-input:focus {
+  border-color: var(--primary);
+}
+
+.depth-input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.depth-unit {
+  font-size: 13px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.depth-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* 文件深度徽标（序号旁） */
+.file-depth-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 4px;
+  user-select: none;
+}
+
+.file-depth-badge.level-current {
+  background: rgba(59,130,246,0.15);
+  color: #3b82f6;
+}
+
+.file-depth-badge.level-child {
+  background: rgba(16,185,129,0.15);
+  color: #10b981;
+}
+
+.file-depth-badge.level-deep {
+  background: rgba(245,158,11,0.15);
+  color: #f59e0b;
+}
+
 /* ==========================================
    Context Menu (右键菜单)
    ========================================== */
@@ -879,6 +980,23 @@ html, body {
 
 .file-card:hover .file-actions {
   opacity: 1;
+}
+
+/* File Index */
+.file-index-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 32px;
+  flex-shrink: 0;
+}
+
+.file-index {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
 }
 
 /* File Checkbox */
