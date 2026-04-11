@@ -6,227 +6,111 @@ chrome.action.onClicked.addListener(() => {
 // Native Messaging Host 名称
 const NATIVE_HOST_NAME = 'com.workspace_tags.native_host';
 
+function relayNativeMessage(sendResponse, payload, options = {}) {
+  const {
+    errorPrefix = 'Native Host 未安装。错误: ',
+    onError,
+    onSuccess,
+  } = options;
+
+  chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, payload, (response) => {
+    if (chrome.runtime.lastError) {
+      if (typeof onError === 'function') {
+        sendResponse(onError(chrome.runtime.lastError));
+      } else {
+        sendResponse({ error: `${errorPrefix}${chrome.runtime.lastError.message}` });
+      }
+      return;
+    }
+
+    if (typeof onSuccess === 'function') {
+      sendResponse(onSuccess(response));
+      return;
+    }
+
+    sendResponse(response);
+  });
+
+  return true;
+}
+
 // 处理来自前端页面的消息
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'listDir') {
-    // 通过 Native Messaging 读取本地目录
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'listDir', path: request.path },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({
-            error: 'Native Host 未安装或连接失败。请运行 native-host/install.sh (macOS/Linux) 或 install.bat (Windows) 安装。\n' +
-                   '错误详情: ' + chrome.runtime.lastError.message
-          });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true; // 保持 sendResponse 通道打开（异步回调）
-  }
+  switch (request.action) {
+    case 'listDir':
+      return relayNativeMessage(sendResponse, { action: 'listDir', path: request.path }, {
+        onError: (lastError) => ({
+          error: 'Native Host 未安装或连接失败。请运行 native-host/install.sh (macOS/Linux) 或 install.bat (Windows) 安装。\n' +
+            '错误详情: ' + lastError.message,
+        }),
+      });
 
-  if (request.action === 'listDirPaged') {
-    // 分页读取目录文件列表（大目录用）
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'listDirPaged', path: request.path, page: request.page || 0 },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({
-            error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message
-          });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'listDirPaged':
+      return relayNativeMessage(sendResponse, {
+        action: 'listDirPaged',
+        path: request.path,
+        page: request.page || 0,
+      });
 
-  if (request.action === 'openFile') {
-    // 通过 Native Messaging 打开本地文件
-    const msg = { action: 'openFile', path: request.path };
-    if (request.app) msg.app = request.app;
-    chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, msg, (response) => {
-      if (chrome.runtime.lastError) {
-        sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-      } else {
-        sendResponse(response);
-      }
-    });
-    return true;
-  }
+    case 'openFile': {
+      const msg = { action: 'openFile', path: request.path };
+      if (request.app) msg.app = request.app;
+      return relayNativeMessage(sendResponse, msg);
+    }
 
-  if (request.action === 'readFile') {
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'readFile', path: request.path },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'readFile':
+      return relayNativeMessage(sendResponse, { action: 'readFile', path: request.path });
 
-  if (request.action === 'revealInFinder') {
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'revealInFinder', path: request.path },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'revealInFinder':
+      return relayNativeMessage(sendResponse, { action: 'revealInFinder', path: request.path });
 
-  if (request.action === 'chooseDirectory') {
-    // 弹出系统原生目录选择对话框
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'chooseDirectory' },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'chooseDirectory':
+      return relayNativeMessage(sendResponse, { action: 'chooseDirectory' });
 
-  if (request.action === 'chooseAndListDir') {
-    // 弹出系统原生目录选择对话框 + 列出文件
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'chooseAndListDir' },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'chooseAndListDir':
+      return relayNativeMessage(sendResponse, { action: 'chooseAndListDir' });
 
-  if (request.action === 'chooseFiles') {
-    // 弹出系统原生文件选择对话框（支持多选）
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'chooseFiles' },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'chooseFiles':
+      return relayNativeMessage(sendResponse, { action: 'chooseFiles' });
 
-  if (request.action === 'pingNativeHost') {
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'ping' },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ available: false, error: chrome.runtime.lastError.message });
-        } else {
-          sendResponse({ available: true, ...response });
-        }
-      }
-    );
-    return true;
-  }
+    case 'pingNativeHost':
+      return relayNativeMessage(sendResponse, { action: 'ping' }, {
+        onError: (lastError) => ({ available: false, error: lastError.message }),
+        onSuccess: (response) => ({ available: true, ...response }),
+      });
 
-  if (request.action === 'listApps') {
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'listApps' },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'listApps':
+      return relayNativeMessage(sendResponse, { action: 'listApps' });
 
-  if (request.action === 'batchGetFileInfo') {
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'batchGetFileInfo', paths: request.paths || [] },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'batchGetFileInfo':
+      return relayNativeMessage(sendResponse, { action: 'batchGetFileInfo', paths: request.paths || [] });
 
-  if (request.action === 'renameFile') {
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'renameFile', oldPath: request.oldPath, newName: request.newName },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'renameFile':
+      return relayNativeMessage(sendResponse, {
+        action: 'renameFile',
+        oldPath: request.oldPath,
+        newName: request.newName,
+      });
 
-  if (request.action === 'createDirStructure') {
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'createDirStructure', basePath: request.basePath || '', tagPaths: request.tagPaths || [], fileMoves: request.fileMoves || null, keepSource: !!request.keepSource },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'createDirStructure':
+      return relayNativeMessage(sendResponse, {
+        action: 'createDirStructure',
+        basePath: request.basePath || '',
+        tagPaths: request.tagPaths || [],
+        fileMoves: request.fileMoves || null,
+        keepSource: !!request.keepSource,
+      });
 
-  if (request.action === 'openTerminal') {
-    chrome.runtime.sendNativeMessage(
-      NATIVE_HOST_NAME,
-      { action: 'openTerminal', path: request.path || '', app: request.app || '' },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Native Host 未安装。错误: ' + chrome.runtime.lastError.message });
-        } else {
-          sendResponse(response);
-        }
-      }
-    );
-    return true;
-  }
+    case 'openTerminal':
+      return relayNativeMessage(sendResponse, {
+        action: 'openTerminal',
+        path: request.path || '',
+        app: request.app || '',
+      });
 
-  // 未知 action 兜底，防止前端 Promise 挂起
-  sendResponse({ error: `未知操作: ${request.action || '(empty)'}` });
+    default:
+      // 未知 action 兜底，防止前端 Promise 挂起
+      sendResponse({ error: `未知操作: ${request.action || '(empty)'}` });
+      return false;
+  }
 });

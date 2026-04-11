@@ -9,6 +9,21 @@ import os
 import shutil
 import struct
 import sys
+import time
+
+
+SKIP_DIRS = {
+    'node_modules', '__pycache__', '.git', '.svn', '.hg',
+    'venv', '.venv', 'env', '.env',
+    'dist', 'build', '.next', '.nuxt',
+    '.cache', '.tmp', '.idea', '.vscode',
+    'vendor', 'Pods', '.gradle',
+    'target', 'out', 'bin', 'obj',
+}
+
+SCAN_CACHE_TTL_SECONDS = 30
+SCAN_CACHE_MAX_ENTRIES = 4
+_SCAN_CACHE = {}
 
 
 def read_message():
@@ -44,52 +59,93 @@ def send_message(message):
     sys.stdout.buffer.flush()
 
 
-def list_directory(dir_path):
-    """
-    递归遍历目录，返回所有文件的相对路径列表。
-    格式与 webkitRelativePath 一致: "rootDir/subDir/file.txt"
-    """
-    dir_path = os.path.expanduser(dir_path)
-    dir_path = os.path.abspath(dir_path)
+def _normalize_dir_path(dir_path):
+    return os.path.abspath(os.path.expanduser(dir_path))
 
-    if not os.path.isdir(dir_path):
-        return {"error": f"路径不存在或不是目录: {dir_path}"}
 
+def _directory_signature(dir_path):
+    stat = os.stat(dir_path)
+    return (stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _prune_scan_cache():
+    while len(_SCAN_CACHE) > SCAN_CACHE_MAX_ENTRIES:
+        oldest_key = min(_SCAN_CACHE.items(), key=lambda item: item[1]['cached_at'])[0]
+        _SCAN_CACHE.pop(oldest_key, None)
+
+
+def _scan_directory(dir_path):
     root_name = os.path.basename(dir_path)
-    files = []
+    all_files = []
+    all_dirs = []
 
-    # 跳过的目录名
-    skip_dirs = {
-        'node_modules', '__pycache__', '.git', '.svn', '.hg',
-        'venv', '.venv', 'env', '.env',
-        'dist', 'build', '.next', '.nuxt',
-        '.cache', '.tmp', '.idea', '.vscode',
-        'vendor', 'Pods', '.gradle',
-        'target', 'out', 'bin', 'obj',
-    }
-    
     try:
         for dirpath, dirnames, filenames in os.walk(dir_path):
             # 跳过隐藏目录和常见的无意义大目录
-            dirnames[:] = [d for d in dirnames if not d.startswith('.') and d not in skip_dirs]
-            
+            dirnames[:] = [d for d in dirnames if not d.startswith('.') and d not in SKIP_DIRS]
+
+            # 收集子目录（相对于上级目录的路径，与文件路径格式一致）
+            for dirname in dirnames:
+                full_dir = os.path.join(dirpath, dirname)
+                rel_dir = os.path.relpath(full_dir, os.path.dirname(dir_path)).replace(os.sep, '/')
+                all_dirs.append(rel_dir)
+
             for filename in filenames:
-                # 跳过隐藏文件
                 if filename.startswith('.'):
                     continue
-                
                 full_path = os.path.join(dirpath, filename)
-                # 计算相对于父目录的路径（包含根目录名）
-                rel_path = os.path.relpath(full_path, os.path.dirname(dir_path))
-                # 统一使用 / 分隔
-                rel_path = rel_path.replace(os.sep, '/')
-                files.append(rel_path)
+                rel_path = os.path.relpath(full_path, os.path.dirname(dir_path)).replace(os.sep, '/')
+                all_files.append(rel_path)
     except PermissionError as e:
         return {"error": f"权限不足: {str(e)}"}
     except Exception as e:
         return {"error": f"读取目录出错: {str(e)}"}
 
-    return {"files": files, "rootName": root_name, "totalCount": len(files)}
+    return {"files": all_files, "dirs": all_dirs, "rootName": root_name}
+
+
+def _get_directory_scan(dir_path, force_refresh=False):
+    cache_key = dir_path
+    now = time.time()
+    signature = _directory_signature(dir_path)
+    cached = _SCAN_CACHE.get(cache_key)
+
+    if (
+        not force_refresh and cached
+        and cached['signature'] == signature
+        and now - cached['cached_at'] <= SCAN_CACHE_TTL_SECONDS
+    ):
+        return cached['scan']
+
+    scan = _scan_directory(dir_path)
+    if 'error' in scan:
+        _SCAN_CACHE.pop(cache_key, None)
+        return scan
+
+    _SCAN_CACHE[cache_key] = {
+        'signature': signature,
+        'cached_at': now,
+        'scan': scan,
+    }
+    _prune_scan_cache()
+    return scan
+
+
+def list_directory(dir_path):
+    """
+    递归遍历目录，返回所有文件的相对路径列表。
+    格式与 webkitRelativePath 一致: "rootDir/subDir/file.txt"
+    """
+    dir_path = _normalize_dir_path(dir_path)
+
+    if not os.path.isdir(dir_path):
+        return {"error": f"路径不存在或不是目录: {dir_path}"}
+
+    scan = _scan_directory(dir_path)
+    if 'error' in scan:
+        return scan
+
+    return {"files": scan['files'], "rootName": scan['rootName'], "totalCount": len(scan['files'])}
 
 
 def list_directory_paged(dir_path, page=0, page_size=2000, create_if_not_exists=False):
@@ -101,9 +157,8 @@ def list_directory_paged(dir_path, page=0, page_size=2000, create_if_not_exists=
     - dirs: 所有子目录的相对路径列表（不分页，仅在 page=0 时返回）
     - created: 如果目录是新创建的，返回 True
     """
-    dir_path = os.path.expanduser(dir_path)
-    dir_path = os.path.abspath(dir_path)
-    
+    dir_path = _normalize_dir_path(dir_path)
+
     created = False
 
     if not os.path.isdir(dir_path):
@@ -118,41 +173,13 @@ def list_directory_paged(dir_path, page=0, page_size=2000, create_if_not_exists=
         else:
             return {"error": f"路径不存在或不是目录: {dir_path}"}
 
-    root_name = os.path.basename(dir_path)
-    all_files = []
-    all_dirs = []
+    scan = _get_directory_scan(dir_path, force_refresh=(page == 0))
+    if 'error' in scan:
+        return scan
 
-    # 跳过的目录名（这些目录通常包含大量无意义的文件）
-    skip_dirs = {
-        'node_modules', '__pycache__', '.git', '.svn', '.hg',
-        'venv', '.venv', 'env', '.env',
-        'dist', 'build', '.next', '.nuxt',
-        '.cache', '.tmp', '.idea', '.vscode',
-        'vendor', 'Pods', '.gradle',
-        'target', 'out', 'bin', 'obj',
-    }
-
-    try:
-        for dp, dirnames, filenames in os.walk(dir_path):
-            # 跳过隐藏目录和常见的无意义大目录
-            dirnames[:] = [d for d in dirnames if not d.startswith('.') and d not in skip_dirs]
-            # 收集子目录（相对于上级目录的路径，与文件路径格式一致）
-            for dirname in dirnames:
-                full_dir = os.path.join(dp, dirname)
-                rel_dir = os.path.relpath(full_dir, os.path.dirname(dir_path))
-                rel_dir = rel_dir.replace(os.sep, '/')
-                all_dirs.append(rel_dir)
-            for filename in filenames:
-                if filename.startswith('.'):
-                    continue
-                full_path = os.path.join(dp, filename)
-                rel_path = os.path.relpath(full_path, os.path.dirname(dir_path))
-                rel_path = rel_path.replace(os.sep, '/')
-                all_files.append(rel_path)
-    except PermissionError as e:
-        return {"error": f"权限不足: {str(e)}"}
-    except Exception as e:
-        return {"error": f"读取目录出错: {str(e)}"}
+    root_name = scan['rootName']
+    all_files = scan['files']
+    all_dirs = scan['dirs']
 
     total_count = len(all_files)
     total_pages = max(1, (total_count + page_size - 1) // page_size)

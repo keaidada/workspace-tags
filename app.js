@@ -276,6 +276,7 @@ class FileManager {
     this.trash = []; // 回收站：[{...fileRecord, deletedTime: timestamp}]
     this.tagManager = tagManager;
     this._tagFileCountsCache = null;
+    this._filesById = new Map();
   }
 
   /** 文件或标签变更时清除计数缓存 */
@@ -283,14 +284,31 @@ class FileManager {
     this._tagFileCountsCache = null;
   }
 
+  _normalizeFileRecord(file) {
+    return {
+      ...file,
+      tags: Array.isArray(file?.tags) ? file.tags : [],
+    };
+  }
+
+  _rebuildFileIndexes() {
+    this._filesById = new Map(this.files.map((file) => [file.id, file]));
+  }
+
+  getFileById(fileId) {
+    return this._filesById.get(fileId) || null;
+  }
+
   async load() {
-    this.files = await StorageService.getFiles();
-    this.trash = await StorageService.getTrash();
+    this.files = (await StorageService.getFiles()).map((file) => this._normalizeFileRecord(file));
+    this.trash = (await StorageService.getTrash()).map((file) => this._normalizeFileRecord(file));
+    this._rebuildFileIndexes();
     this._invalidateCountsCache();
   }
 
   async save() {
     try {
+      this._rebuildFileIndexes();
       await StorageService.saveFiles(this.files);
       this._invalidateCountsCache();
     } catch (err) {
@@ -1519,6 +1537,349 @@ class UIController {
     document.getElementById('create-dir-manual-input')?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') this._createDirFromManual();
     });
+
+    this._bindDynamicFileListEvents();
+  }
+
+  _getCurrentFilteredFiles() {
+    return this.fileManager.getFilteredFiles(
+      this.activeTags,
+      this.filterNoTag,
+      this.searchQuery,
+      this.sortOrder,
+      this.tagDisplayMode,
+      this.searchTags,
+      this.sortField,
+      this.fileInfoCache,
+      this.depthFilter
+    );
+  }
+
+  _getCurrentPageFiles(allFilteredFiles = this._getCurrentFilteredFiles()) {
+    const totalFiles = allFilteredFiles.length;
+    const totalPages = Math.max(1, Math.ceil(totalFiles / this.pageSize));
+    const safePage = Math.min(Math.max(this.currentPage, 1), totalPages);
+    const startIdx = (safePage - 1) * this.pageSize;
+    const endIdx = Math.min(startIdx + this.pageSize, totalFiles);
+    return allFilteredFiles.slice(startIdx, endIdx);
+  }
+
+  _updateFileCardSelection(card, checked) {
+    const fileId = card?.getAttribute('data-id');
+    if (!fileId) return;
+
+    if (checked) {
+      this.selectedFiles.add(fileId);
+    } else {
+      this.selectedFiles.delete(fileId);
+    }
+
+    const checkbox = card.querySelector('.file-checkbox');
+    if (checkbox) checkbox.checked = checked;
+    card.classList.toggle('selected', checked);
+    this.renderBatchBar(this.selectedFiles.size, this._getCurrentPageFiles().length);
+  }
+
+  _hideFileActionDropdowns() {
+    document.querySelectorAll('.copy-dropdown, .open-with-dropdown, .terminal-dropdown').forEach((d) => {
+      d.style.display = 'none';
+    });
+    document.querySelectorAll('.open-with-search-results, .terminal-search-results').forEach((d) => {
+      d.innerHTML = '';
+      d.style.display = 'none';
+    });
+  }
+
+  _renderOpenWithSearchResults(input) {
+    const query = input.value.trim();
+    const resultsDiv = input.closest('.open-with-search-wrap')?.querySelector('.open-with-search-results');
+    if (!resultsDiv) return;
+
+    if (!query) {
+      resultsDiv.innerHTML = '';
+      resultsDiv.style.display = 'none';
+      return;
+    }
+
+    const matches = this.fuzzySearchApps(query);
+    if (matches.length === 0) {
+      resultsDiv.innerHTML = `<button class="open-with-search-item" data-app="${this.escapeHtml(query)}">用 "${this.escapeHtml(query)}" 打开</button>`;
+    } else {
+      resultsDiv.innerHTML = matches.map((m) =>
+        `<button class="open-with-search-item" data-app="${this.escapeHtml(m.name)}">${this.highlightMatch(m.label, query)}</button>`
+      ).join('');
+      const exactMatch = matches.some((m) => m.name.toLowerCase() === query.toLowerCase());
+      if (!exactMatch) {
+        resultsDiv.innerHTML += `<button class="open-with-search-item open-with-search-custom" data-app="${this.escapeHtml(query)}">用 "${this.escapeHtml(query)}" 打开</button>`;
+      }
+    }
+
+    resultsDiv.style.display = 'block';
+  }
+
+  _renderTerminalSearchResults(input) {
+    const query = input.value.trim();
+    const resultsDiv = input.closest('.terminal-search-wrap')?.querySelector('.terminal-search-results');
+    if (!resultsDiv) return;
+
+    if (!query) {
+      resultsDiv.innerHTML = '';
+      resultsDiv.style.display = 'none';
+      return;
+    }
+
+    const matches = this.fuzzySearchApps(query);
+    if (matches.length === 0) {
+      resultsDiv.innerHTML = `<button class="terminal-search-item" data-terminal="${this.escapeHtml(query)}">用 "${this.escapeHtml(query)}" 打开</button>`;
+    } else {
+      resultsDiv.innerHTML = matches.map((m) =>
+        `<button class="terminal-search-item" data-terminal="${this.escapeHtml(m.name)}">${this.highlightMatch(m.label, query)}</button>`
+      ).join('');
+      const exactMatch = matches.some((m) => m.name.toLowerCase() === query.toLowerCase());
+      if (!exactMatch) {
+        resultsDiv.innerHTML += `<button class="terminal-search-item terminal-search-custom" data-terminal="${this.escapeHtml(query)}">用 "${this.escapeHtml(query)}" 打开</button>`;
+      }
+    }
+
+    resultsDiv.style.display = 'block';
+  }
+
+  _bindDynamicFileListEvents() {
+    const fileList = document.getElementById('file-list');
+    const paginationBar = document.getElementById('pagination-bar');
+    if (!fileList || !paginationBar) return;
+
+    fileList.addEventListener('change', (e) => {
+      const checkbox = e.target.closest('.file-checkbox');
+      if (!checkbox) return;
+      e.stopPropagation();
+      const card = checkbox.closest('.file-card');
+      if (!card) return;
+      this._updateFileCardSelection(card, checkbox.checked);
+    });
+
+    fileList.addEventListener('dblclick', (e) => {
+      const nameEl = e.target.closest('.file-name-editable');
+      if (!nameEl) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const fileId = nameEl.getAttribute('data-file-id');
+      this.startEditFileName(fileId, nameEl);
+    });
+
+    fileList.addEventListener('input', (e) => {
+      const openWithInput = e.target.closest('.open-with-input');
+      if (openWithInput) {
+        e.stopPropagation();
+        this._renderOpenWithSearchResults(openWithInput);
+        return;
+      }
+
+      const terminalInput = e.target.closest('.terminal-search-input');
+      if (terminalInput) {
+        e.stopPropagation();
+        this._renderTerminalSearchResults(terminalInput);
+      }
+    });
+
+    fileList.addEventListener('keydown', (e) => {
+      const openWithInput = e.target.closest('.open-with-input');
+      if (openWithInput) {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          const appName = openWithInput.value.trim();
+          if (!appName) return;
+          const wrapper = openWithInput.closest('.open-dropdown-wrapper');
+          const fileId = wrapper?.querySelector('[data-action="open"]')?.getAttribute('data-id');
+          openWithInput.closest('.open-with-dropdown').style.display = 'none';
+          openWithInput.value = '';
+          this._renderOpenWithSearchResults(openWithInput);
+          this.openFileById(fileId, appName);
+        }
+        return;
+      }
+
+      const terminalInput = e.target.closest('.terminal-search-input');
+      if (!terminalInput) return;
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        const appName = terminalInput.value.trim();
+        if (!appName) return;
+        const wrapper = terminalInput.closest('.terminal-dropdown-wrapper');
+        const fileId = wrapper?.querySelector('[data-action="terminal"]')?.getAttribute('data-id');
+        terminalInput.closest('.terminal-dropdown').style.display = 'none';
+        terminalInput.value = '';
+        this._renderTerminalSearchResults(terminalInput);
+        this.openTerminalById(fileId, appName);
+      }
+    });
+
+    fileList.addEventListener('click', async (e) => {
+      const openSearchInput = e.target.closest('.open-with-input');
+      const terminalSearchInput = e.target.closest('.terminal-search-input');
+      if (openSearchInput || terminalSearchInput) {
+        e.stopPropagation();
+        return;
+      }
+
+      const openSearchItem = e.target.closest('.open-with-search-item');
+      if (openSearchItem) {
+        e.stopPropagation();
+        const wrapper = openSearchItem.closest('.open-dropdown-wrapper');
+        const input = wrapper?.querySelector('.open-with-input');
+        const fileId = wrapper?.querySelector('[data-action="open"]')?.getAttribute('data-id');
+        openSearchItem.closest('.open-with-dropdown').style.display = 'none';
+        if (input) {
+          input.value = '';
+          this._renderOpenWithSearchResults(input);
+        }
+        this.openFileById(fileId, openSearchItem.getAttribute('data-app'));
+        return;
+      }
+
+      const terminalSearchItem = e.target.closest('.terminal-search-item');
+      if (terminalSearchItem) {
+        e.stopPropagation();
+        const wrapper = terminalSearchItem.closest('.terminal-dropdown-wrapper');
+        const input = wrapper?.querySelector('.terminal-search-input');
+        const fileId = wrapper?.querySelector('[data-action="terminal"]')?.getAttribute('data-id');
+        terminalSearchItem.closest('.terminal-dropdown').style.display = 'none';
+        if (input) {
+          input.value = '';
+          this._renderTerminalSearchResults(input);
+        }
+        this.openTerminalById(fileId, terminalSearchItem.getAttribute('data-terminal'));
+        return;
+      }
+
+      const openItem = e.target.closest('.open-with-dropdown-item');
+      if (openItem) {
+        e.stopPropagation();
+        const wrapper = openItem.closest('.open-dropdown-wrapper');
+        const fileId = wrapper?.querySelector('[data-action="open"]')?.getAttribute('data-id');
+        openItem.closest('.open-with-dropdown').style.display = 'none';
+        this.openFileById(fileId, openItem.getAttribute('data-app'));
+        return;
+      }
+
+      const terminalItem = e.target.closest('.terminal-dropdown-item');
+      if (terminalItem) {
+        e.stopPropagation();
+        const wrapper = terminalItem.closest('.terminal-dropdown-wrapper');
+        const fileId = wrapper?.querySelector('[data-action="terminal"]')?.getAttribute('data-id');
+        terminalItem.closest('.terminal-dropdown').style.display = 'none';
+        this.openTerminalById(fileId, terminalItem.getAttribute('data-terminal'));
+        return;
+      }
+
+      const copyItem = e.target.closest('.copy-dropdown-item');
+      if (copyItem) {
+        e.stopPropagation();
+        const card = copyItem.closest('.file-card');
+        const copyType = copyItem.getAttribute('data-copy-type');
+        let text = '';
+        if (copyType === 'fullpath') {
+          text = card?.getAttribute('data-filepath') || '';
+        } else if (copyType === 'dirpath') {
+          text = card?.getAttribute('data-dirpath') || '';
+        } else if (copyType === 'filename') {
+          text = card?.getAttribute('data-filename') || '';
+        }
+        if (text) {
+          navigator.clipboard.writeText(text).then(() => {
+            const labels = { fullpath: '全路径', dirpath: '目录路径', filename: '文件名' };
+            this.showToast(`已复制${labels[copyType] || ''}`, 'success');
+          }).catch(() => {
+            this.showToast('复制失败，请检查剪贴板权限', 'error');
+          });
+        } else {
+          this.showToast('无法获取路径信息', 'error');
+        }
+        copyItem.closest('.copy-dropdown').style.display = 'none';
+        return;
+      }
+
+      const actionBtn = e.target.closest('.file-action-btn');
+      if (actionBtn) {
+        e.stopPropagation();
+        const action = actionBtn.getAttribute('data-action');
+        const fileId = actionBtn.getAttribute('data-id');
+
+        if (action === 'tag') {
+          this.showFileTagsModal(fileId);
+          return;
+        }
+        if (action === 'open') {
+          this.openFileById(fileId);
+          return;
+        }
+        if (action === 'reveal') {
+          this.revealFileById(fileId);
+          return;
+        }
+        if (action === 'terminal') {
+          this.openTerminalById(fileId);
+          return;
+        }
+        if (action === 'remove') {
+          await this.fileManager.removeFile(fileId);
+          this.selectedFiles.delete(fileId);
+          this.showToast('已移入回收站', 'info');
+          this.render();
+          return;
+        }
+
+        if (action === 'open-with-menu' || action === 'terminal-menu' || action === 'copy-menu') {
+          const selector = action === 'open-with-menu'
+            ? '.open-with-dropdown'
+            : action === 'terminal-menu'
+              ? '.terminal-dropdown'
+              : '.copy-dropdown';
+          const dropdown = actionBtn.parentElement?.querySelector(selector);
+          const willShow = dropdown && dropdown.style.display === 'none';
+          this._hideFileActionDropdowns();
+          if (dropdown) {
+            dropdown.style.display = willShow ? 'block' : 'none';
+          }
+        }
+          return;
+      }
+
+      const card = e.target.closest('.file-card');
+      if (!card) return;
+      if (
+        e.target.closest('.file-checkbox') ||
+        e.target.closest('.file-name-editing') ||
+        e.target.closest('.file-name-editable') ||
+        e.target.closest('.open-with-dropdown') ||
+        e.target.closest('.terminal-dropdown') ||
+        e.target.closest('.copy-dropdown')
+      ) {
+        return;
+      }
+
+      const checkbox = card.querySelector('.file-checkbox');
+      if (!checkbox) return;
+      this._updateFileCardSelection(card, !checkbox.checked);
+    });
+
+    paginationBar.addEventListener('click', (e) => {
+      const pageBtn = e.target.closest('.page-btn[data-page]');
+      if (!pageBtn) return;
+      const totalPages = Math.max(1, Math.ceil(this._getCurrentFilteredFiles().length / this.pageSize));
+      const page = parseInt(pageBtn.getAttribute('data-page'), 10);
+      if (page >= 1 && page <= totalPages && page !== this.currentPage) {
+        this.goToPage(page);
+      }
+    });
+
+    paginationBar.addEventListener('change', (e) => {
+      if (!e.target.matches('.page-size-select')) return;
+      this.pageSize = parseInt(e.target.value, 10);
+      this.currentPage = 1;
+      this.renderFileList();
+      document.getElementById('file-grid-container')?.scrollTo(0, 0);
+    });
   }
 
   // ==========================================
@@ -2572,7 +2933,7 @@ class UIController {
         if (matchedFiles.length === 0 && moved.dest) {
           for (const [fileId, moveInfo] of fileMovesMap) {
             if (moveInfo.src === moved.src || moved.src.endsWith(moveInfo.src.replace(/^\//, '')) || moveInfo.src.endsWith(moved.src.replace(/^\//, ''))) {
-              const file = this.fileManager.files.find((f) => f.id === fileId);
+              const file = this.fileManager.getFileById(fileId);
               if (file && file.path !== moved.dest) {
                 delete this.fileInfoCache[file.path];
                 file.path = moved.dest;
@@ -3693,7 +4054,7 @@ class UIController {
 
   showFileTagsModal(fileId) {
     this.editingFileId = fileId;
-    const file = this.fileManager.files.find((f) => f.id === fileId);
+    const file = this.fileManager.getFileById(fileId);
     if (!file) return;
 
     // 记录树形展开状态（弹窗级别）—— 默认只展开文件已关联标签的祖先路径
@@ -3800,7 +4161,7 @@ class UIController {
   }
 
   async _saveFileTagsSelection() {
-    const file = this.fileManager.files.find((f) => f.id === this.editingFileId);
+    const file = this.fileManager.getFileById(this.editingFileId);
     if (!file) return;
 
     // 直接在内存中更新标签，然后保存一次
@@ -4053,306 +4414,6 @@ class UIController {
 
     container.innerHTML = html;
 
-    // 绑定复选框
-    container.querySelectorAll('.file-checkbox').forEach((cb) => {
-      cb.addEventListener('change', (e) => {
-        e.stopPropagation();
-        const fileId = cb.getAttribute('data-id');
-        if (cb.checked) {
-          this.selectedFiles.add(fileId);
-        } else {
-          this.selectedFiles.delete(fileId);
-        }
-        // 更新卡片选中样式
-        const card = cb.closest('.file-card');
-        if (card) card.classList.toggle('selected', cb.checked);
-        this.renderBatchBar(this.selectedFiles.size, files.length);
-      });
-    });
-
-    // 绑定卡片点击选中（点击卡片空白区域也能切换选中）
-    container.querySelectorAll('.file-card').forEach((card) => {
-      card.addEventListener('click', (e) => {
-        // 如果点击的是按钮、链接或正在编辑的文件名，不处理
-        if (e.target.closest('.file-action-btn') || e.target.closest('.file-checkbox') || e.target.closest('.file-name-editing') || e.target.closest('.file-name-editable')) return;
-        const cb = card.querySelector('.file-checkbox');
-        if (cb) {
-          cb.checked = !cb.checked;
-          cb.dispatchEvent(new Event('change'));
-        }
-      });
-    });
-
-    // 绑定双击文件名进行重命名
-    container.querySelectorAll('.file-name-editable').forEach((nameEl) => {
-      nameEl.addEventListener('dblclick', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const fileId = nameEl.getAttribute('data-file-id');
-        this.startEditFileName(fileId, nameEl);
-      });
-    });
-
-    // 绑定管理标签按钮
-    container.querySelectorAll('.file-action-btn[data-action="tag"]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.showFileTagsModal(btn.getAttribute('data-id'));
-      });
-    });
-
-    // 绑定打开文件按钮
-    container.querySelectorAll('.file-action-btn[data-action="open"]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const fileId = btn.getAttribute('data-id');
-        this.openFileById(fileId);
-      });
-    });
-
-    // 绑定"选择打开方式"下拉箭头
-    container.querySelectorAll('.file-action-btn[data-action="open-with-menu"]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        // 先关闭其他所有下拉菜单
-        document.querySelectorAll('.open-with-dropdown').forEach((d) => d.style.display = 'none');
-        document.querySelectorAll('.copy-dropdown').forEach((d) => d.style.display = 'none');
-        const dropdown = btn.parentElement.querySelector('.open-with-dropdown');
-        if (dropdown) {
-          dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
-        }
-      });
-    });
-
-    // 绑定"选择打开方式"下拉菜单项
-    container.querySelectorAll('.open-with-dropdown-item').forEach((item) => {
-      item.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const app = item.getAttribute('data-app');
-        const wrapper = item.closest('.open-dropdown-wrapper');
-        const fileId = wrapper.querySelector('[data-action="open"]').getAttribute('data-id');
-        item.closest('.open-with-dropdown').style.display = 'none';
-        this.openFileById(fileId, app);
-      });
-    });
-
-    // 绑定自定义应用搜索输入框
-    container.querySelectorAll('.open-with-input').forEach((input) => {
-      // 输入时触发模糊搜索
-      input.addEventListener('input', (e) => {
-        e.stopPropagation();
-        const query = input.value.trim();
-        const resultsDiv = input.closest('.open-with-search-wrap').querySelector('.open-with-search-results');
-        if (!query) {
-          resultsDiv.innerHTML = '';
-          resultsDiv.style.display = 'none';
-          return;
-        }
-        const matches = this.fuzzySearchApps(query);
-        if (matches.length === 0) {
-          // 没匹配到也显示一个"用 xxx 打开"的选项
-          resultsDiv.innerHTML = `<button class="open-with-search-item" data-app="${this.escapeHtml(query)}">用 "${this.escapeHtml(query)}" 打开</button>`;
-        } else {
-          resultsDiv.innerHTML = matches.map(m =>
-            `<button class="open-with-search-item" data-app="${this.escapeHtml(m.name)}">${this.highlightMatch(m.label, query)}</button>`
-          ).join('');
-          // 如果输入的不完全匹配任何结果，追加一个直接使用输入名的选项
-          const exactMatch = matches.some(m => m.name.toLowerCase() === query.toLowerCase());
-          if (!exactMatch) {
-            resultsDiv.innerHTML += `<button class="open-with-search-item open-with-search-custom" data-app="${this.escapeHtml(query)}">用 "${this.escapeHtml(query)}" 打开</button>`;
-          }
-        }
-        resultsDiv.style.display = 'block';
-        // 绑定搜索结果点击
-        resultsDiv.querySelectorAll('.open-with-search-item').forEach((item) => {
-          item.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            const app = item.getAttribute('data-app');
-            const wrapper = item.closest('.open-dropdown-wrapper');
-            const fileId = wrapper.querySelector('[data-action="open"]').getAttribute('data-id');
-            item.closest('.open-with-dropdown').style.display = 'none';
-            input.value = '';
-            resultsDiv.innerHTML = '';
-            resultsDiv.style.display = 'none';
-            this.openFileById(fileId, app);
-          });
-        });
-      });
-      // 回车直接用输入的应用名打开
-      input.addEventListener('keydown', (e) => {
-        e.stopPropagation();
-        if (e.key === 'Enter') {
-          const appName = input.value.trim();
-          if (!appName) return;
-          const wrapper = input.closest('.open-dropdown-wrapper');
-          const fileId = wrapper.querySelector('[data-action="open"]').getAttribute('data-id');
-          input.closest('.open-with-dropdown').style.display = 'none';
-          const resultsDiv = input.closest('.open-with-search-wrap').querySelector('.open-with-search-results');
-          input.value = '';
-          resultsDiv.innerHTML = '';
-          resultsDiv.style.display = 'none';
-          this.openFileById(fileId, appName);
-        }
-      });
-      // 阻止事件冒泡，防止输入时触发其他快捷键
-      input.addEventListener('click', (e) => e.stopPropagation());
-    });
-
-    // 绑定在 Finder 中显示按钮
-    container.querySelectorAll('.file-action-btn[data-action="reveal"]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const fileId = btn.getAttribute('data-id');
-        this.revealFileById(fileId);
-      });
-    });
-
-    // 绑定在终端中打开按钮（默认终端）
-    container.querySelectorAll('.file-action-btn[data-action="terminal"]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const fileId = btn.getAttribute('data-id');
-        this.openTerminalById(fileId);
-      });
-    });
-
-    // 绑定终端下拉箭头
-    container.querySelectorAll('.file-action-btn[data-action="terminal-menu"]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        // 先关闭其他所有下拉菜单
-        document.querySelectorAll('.terminal-dropdown').forEach((d) => d.style.display = 'none');
-        document.querySelectorAll('.open-with-dropdown').forEach((d) => d.style.display = 'none');
-        document.querySelectorAll('.copy-dropdown').forEach((d) => d.style.display = 'none');
-        const dropdown = btn.parentElement.querySelector('.terminal-dropdown');
-        if (dropdown) {
-          dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
-        }
-      });
-    });
-
-    // 绑定终端下拉菜单项（默认选项）
-    container.querySelectorAll('.terminal-dropdown-item').forEach((item) => {
-      item.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const termApp = item.getAttribute('data-terminal');
-        const wrapper = item.closest('.terminal-dropdown-wrapper');
-        const fileId = wrapper.querySelector('[data-action="terminal"]').getAttribute('data-id');
-        item.closest('.terminal-dropdown').style.display = 'none';
-        this.openTerminalById(fileId, termApp);
-      });
-    });
-
-    // 绑定终端搜索输入框
-    container.querySelectorAll('.terminal-search-input').forEach((input) => {
-      input.addEventListener('input', (e) => {
-        e.stopPropagation();
-        const query = input.value.trim();
-        const resultsDiv = input.closest('.terminal-search-wrap').querySelector('.terminal-search-results');
-        if (!query) {
-          resultsDiv.innerHTML = '';
-          resultsDiv.style.display = 'none';
-          return;
-        }
-        const matches = this.fuzzySearchApps(query);
-        if (matches.length === 0) {
-          resultsDiv.innerHTML = `<button class="terminal-search-item" data-terminal="${this.escapeHtml(query)}">用 "${this.escapeHtml(query)}" 打开</button>`;
-        } else {
-          resultsDiv.innerHTML = matches.map(m =>
-            `<button class="terminal-search-item" data-terminal="${this.escapeHtml(m.name)}">${this.highlightMatch(m.label, query)}</button>`
-          ).join('');
-          const exactMatch = matches.some(m => m.name.toLowerCase() === query.toLowerCase());
-          if (!exactMatch) {
-            resultsDiv.innerHTML += `<button class="terminal-search-item terminal-search-custom" data-terminal="${this.escapeHtml(query)}">用 "${this.escapeHtml(query)}" 打开</button>`;
-          }
-        }
-        resultsDiv.style.display = 'block';
-        resultsDiv.querySelectorAll('.terminal-search-item').forEach((item) => {
-          item.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            const termApp = item.getAttribute('data-terminal');
-            const wrapper = item.closest('.terminal-dropdown-wrapper');
-            const fileId = wrapper.querySelector('[data-action="terminal"]').getAttribute('data-id');
-            item.closest('.terminal-dropdown').style.display = 'none';
-            input.value = '';
-            resultsDiv.innerHTML = '';
-            resultsDiv.style.display = 'none';
-            this.openTerminalById(fileId, termApp);
-          });
-        });
-      });
-      input.addEventListener('keydown', (e) => {
-        e.stopPropagation();
-        if (e.key === 'Enter') {
-          const appName = input.value.trim();
-          if (!appName) return;
-          const wrapper = input.closest('.terminal-dropdown-wrapper');
-          const fileId = wrapper.querySelector('[data-action="terminal"]').getAttribute('data-id');
-          input.closest('.terminal-dropdown').style.display = 'none';
-          const resultsDiv = input.closest('.terminal-search-wrap').querySelector('.terminal-search-results');
-          input.value = '';
-          resultsDiv.innerHTML = '';
-          resultsDiv.style.display = 'none';
-          this.openTerminalById(fileId, appName);
-        }
-      });
-      input.addEventListener('click', (e) => e.stopPropagation());
-    });
-
-    // 绑定复制下拉菜单
-    container.querySelectorAll('.file-action-btn[data-action="copy-menu"]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        // 先关闭其他所有下拉菜单
-        document.querySelectorAll('.copy-dropdown').forEach((d) => d.style.display = 'none');
-        const dropdown = btn.parentElement.querySelector('.copy-dropdown');
-        if (dropdown) {
-          dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
-        }
-      });
-    });
-
-    // 绑定复制下拉菜单项
-    container.querySelectorAll('.copy-dropdown-item').forEach((item) => {
-      item.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const card = item.closest('.file-card');
-        const copyType = item.getAttribute('data-copy-type');
-        let text = '';
-        if (copyType === 'fullpath') {
-          text = card?.getAttribute('data-filepath') || '';
-        } else if (copyType === 'dirpath') {
-          text = card?.getAttribute('data-dirpath') || '';
-        } else if (copyType === 'filename') {
-          text = card?.getAttribute('data-filename') || '';
-        }
-        if (text) {
-          navigator.clipboard.writeText(text).then(() => {
-            const labels = { fullpath: '全路径', dirpath: '目录路径', filename: '文件名' };
-            this.showToast(`已复制${labels[copyType] || ''}`, 'success');
-          }).catch(() => {
-            this.showToast('复制失败，请检查剪贴板权限', 'error');
-          });
-        } else {
-          this.showToast('无法获取路径信息', 'error');
-        }
-        // 关闭下拉菜单
-        item.closest('.copy-dropdown').style.display = 'none';
-      });
-    });
-
-    // 绑定移除文件按钮
-    container.querySelectorAll('.file-action-btn[data-action="remove"]').forEach((btn) => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const fileId = btn.getAttribute('data-id');
-        await this.fileManager.removeFile(fileId);
-        this.selectedFiles.delete(fileId);
-        this.showToast('已移入回收站', 'info');
-        this.render();
-      });
-    });
-
     this.renderBatchBar(this.selectedFiles.size, totalFiles);
 
     // 渲染分页控件
@@ -4409,7 +4470,7 @@ class UIController {
   getSelectedFilePaths() {
     const paths = [];
     for (const fileId of this.selectedFiles) {
-      const file = this.fileManager.files.find((f) => f.id === fileId);
+      const file = this.fileManager.getFileById(fileId);
       if (file) {
         paths.push(this.getFilePath(file));
       }
@@ -4423,7 +4484,7 @@ class UIController {
   getSelectedFileNames() {
     const names = [];
     for (const fileId of this.selectedFiles) {
-      const file = this.fileManager.files.find((f) => f.id === fileId);
+      const file = this.fileManager.getFileById(fileId);
       if (file) {
         names.push(file.name);
       }
@@ -4443,7 +4504,7 @@ class UIController {
     // 防止重复进入编辑状态
     if (nameEl.classList.contains('file-name-editing')) return;
 
-    const file = this.fileManager.files.find((f) => f.id === fileId);
+    const file = this.fileManager.getFileById(fileId);
     if (!file) return;
 
     const oldName = file.name;
@@ -4612,7 +4673,7 @@ class UIController {
    * @param {string} [app] 可选，指定打开的应用名称
    */
   async openFileById(fileId, app) {
-    const file = this.fileManager.files.find((f) => f.id === fileId);
+    const file = this.fileManager.getFileById(fileId);
     if (!file) return;
 
     const filePath = this.getFilePath(file);
@@ -4671,7 +4732,7 @@ class UIController {
    * 如果目录不存在，则逐级向上找到最近的存在的父目录并打开
    */
   async revealFileById(fileId) {
-    const file = this.fileManager.files.find((f) => f.id === fileId);
+    const file = this.fileManager.getFileById(fileId);
     if (!file) return;
 
     const dirPath = this.getFileDirPath(file);
@@ -4738,7 +4799,7 @@ class UIController {
    */
   async openTerminalById(fileId, termApp) {
     if (!termApp) termApp = this.platform === 'win' ? 'cmd' : 'Terminal';
-    const file = this.fileManager.files.find((f) => f.id === fileId);
+    const file = this.fileManager.getFileById(fileId);
     if (!file) return;
 
     const dirPath = this.getFileDirPath(file);
@@ -4769,7 +4830,7 @@ class UIController {
     const dirPaths = new Set();
     let noPathCount = 0;
     for (const fileId of this.selectedFiles) {
-      const file = this.fileManager.files.find((f) => f.id === fileId);
+      const file = this.fileManager.getFileById(fileId);
       if (!file) continue;
       if (!file.path) { noPathCount++; continue; }
       const dirPath = this.getFileDirPath(file);
@@ -4823,7 +4884,7 @@ class UIController {
     let noPathCount = 0;
     for (const fileId of this.selectedFiles) {
       try {
-        const file = this.fileManager.files.find((f) => f.id === fileId);
+        const file = this.fileManager.getFileById(fileId);
         if (!file) continue;
         if (!file.path) { noPathCount++; continue; }
         const data = { path: file.path };
@@ -4866,7 +4927,7 @@ class UIController {
     let items = [];
     const labels = { fullpath: '全路径', dirpath: '目录路径', filename: '文件名' };
     for (const fileId of this.selectedFiles) {
-      const file = this.fileManager.files.find((f) => f.id === fileId);
+      const file = this.fileManager.getFileById(fileId);
       if (!file) continue;
       if (copyType === 'fullpath') {
         items.push(this.getFilePath(file));
@@ -4975,7 +5036,7 @@ class UIController {
     // 获取所选文件已有的标签，用于决定默认展开哪些
     const selectedFileTags = new Set();
     for (const fileId of this.selectedFiles) {
-      const file = this.fileManager.files.find((f) => f.id === fileId);
+      const file = this.fileManager.getFileById(fileId);
       if (file && file.tags) {
         file.tags.forEach((t) => selectedFileTags.add(t));
       }
@@ -5173,7 +5234,7 @@ class UIController {
 
     // 在内存中批量修改，避免每次都写入存储
     for (const fileId of this.selectedFiles) {
-      const file = this.fileManager.files.find((f) => f.id === fileId);
+      const file = this.fileManager.getFileById(fileId);
       if (!file) continue;
 
       if (action === 'add') {
@@ -5397,25 +5458,6 @@ class UIController {
         <span>条</span>
       </div>
     `;
-
-    // 绑定页码按钮
-    bar.querySelectorAll('.page-btn[data-page]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const page = parseInt(btn.getAttribute('data-page'));
-        if (page >= 1 && page <= totalPages && page !== this.currentPage) {
-          this.goToPage(page);
-        }
-      });
-    });
-
-    // 绑定每页条数选择
-    bar.querySelector('.page-size-select')?.addEventListener('change', (e) => {
-      this.pageSize = parseInt(e.target.value);
-      this.currentPage = 1;
-      this.renderFileList();
-      // 滚动到顶部
-      document.getElementById('file-grid-container')?.scrollTo(0, 0);
-    });
   }
 
   goToPage(page) {

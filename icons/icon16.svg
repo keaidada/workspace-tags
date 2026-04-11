@@ -1,4 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-  <rect width="16" height="16" rx="3" fill="#6366f1"/>
-  <path d="M11.75 3.89C11.51 3.55 11.11 3.33 10.67 3.33L3.33 3.34C2.6 3.34 2 3.93 2 4.67v6.67c0 .73.6 1.33 1.33 1.33l7.34.01c.44 0 .84-.22 1.08-.56L14.67 8l-2.92-4.11z" fill="white"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="100%" style="stop-color:#6366f1"/>
+    </linearGradient>
+  </defs>
+  <path d="M2 3 C2 2 3 1 4 1 L9 1 L13 5 L13 13 C13 14 12 15 11 15 L4 15 C3 15 2 14 2 13 Z" fill="url(#g1)"/>
+  <path d="M9 1 L9 4 C9 4.8 9.7 5.5 10.5 5.5 L13 5.5 Z" fill="rgba(255,255,255,0.3)"/>
+  <rect x="4.5" y="7.5" width="6" height="1.2" rx="0.6" fill="rgba(255,255,255,0.8)"/>
+  <rect x="4.5" y="9.8" width="4.5" height="1.2" rx="0.6" fill="rgba(255,255,255,0.5)"/>
+  <circle cx="5.5" cy="4" r="1.2" fill="rgba(255,255,255,0.9)"/>
 </svg>

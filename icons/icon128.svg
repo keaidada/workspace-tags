@@ -1,7 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="24" fill="#6366f1"/>
-  <path d="M94 31.14C92.1 28.42 88.9 26.67 85.33 26.67L26.67 26.72C20.78 26.72 16 31.47 16 37.33v53.33c0 5.87 4.78 10.62 10.67 10.62l58.66.05c3.57 0 6.77-1.76 8.68-4.48L117.33 64 94 31.14z" fill="white"/>
-  <circle cx="52" cy="64" r="6" fill="#6366f1"/>
-  <circle cx="72" cy="64" r="6" fill="#6366f1"/>
-  <circle cx="92" cy="64" r="6" fill="#6366f1" opacity="0.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="100%" style="stop-color:#6366f1"/>
+    </linearGradient>
+  </defs>
+  <!-- 标签主体 -->
+  <path d="M20 24 C20 18.5 24.5 14 30 14 L68 14 L98 44 L98 98 C98 103.5 93.5 108 88 108 L30 108 C24.5 108 20 103.5 20 98 Z" fill="url(#g1)" rx="10"/>
+  <!-- 折角 -->
+  <path d="M68 14 L68 34 C68 39.5 72.5 44 78 44 L98 44 Z" fill="rgba(255,255,255,0.3)"/>
+  <!-- 标签条纹 -->
+  <rect x="34" y="58" width="50" height="6" rx="3" fill="rgba(255,255,255,0.8)"/>
+  <rect x="34" y="72" width="36" height="6" rx="3" fill="rgba(255,255,255,0.5)"/>
+  <rect x="34" y="86" width="44" height="6" rx="3" fill="rgba(255,255,255,0.35)"/>
+  <!-- 小标签图标 -->
+  <circle cx="44" cy="34" r="6" fill="rgba(255,255,255,0.9)"/>
+  <circle cx="44" cy="34" r="2.5" fill="url(#g1)"/>
 </svg>

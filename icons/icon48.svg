@@ -1,4 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
-  <rect width="48" height="48" rx="10" fill="#6366f1"/>
-  <path d="M35.25 11.68C34.54 10.66 33.34 10 32 10L10 10.02C7.79 10.02 6 11.8 6 14v20c0 2.2 1.79 3.98 4 3.98L32 38c1.34 0 2.54-.66 3.26-1.68L44 24l-8.75-12.32z" fill="white"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="100%" style="stop-color:#6366f1"/>
+    </linearGradient>
+  </defs>
+  <path d="M7 9 C7 7 9 5 11 5 L25 5 L37 17 L37 37 C37 39 35 41 33 41 L11 41 C9 41 7 39 7 37 Z" fill="url(#g1)"/>
+  <path d="M25 5 L25 13 C25 15 27 17 29 17 L37 17 Z" fill="rgba(255,255,255,0.3)"/>
+  <rect x="13" y="22" width="18" height="2.5" rx="1.25" fill="rgba(255,255,255,0.8)"/>
+  <rect x="13" y="27.5" width="13" height="2.5" rx="1.25" fill="rgba(255,255,255,0.5)"/>
+  <rect x="13" y="33" width="16" height="2.5" rx="1.25" fill="rgba(255,255,255,0.35)"/>
+  <circle cx="16.5" cy="12.5" r="2.5" fill="rgba(255,255,255,0.9)"/>
+  <circle cx="16.5" cy="12.5" r="1" fill="url(#g1)"/>
 </svg>
