@@ -100,8 +100,9 @@
 
 ```
 workspace-tags/
-├── manifest.json      # Chrome 插件配置（MV3 新标签页覆盖）
-├── newtab.html        # 全屏新标签页
+├── manifest.json      # Chrome 插件配置（MV3 新标签页覆盖为空白页）
+├── blank.html         # 空白新标签页
+├── newtab.html        # 文件标签管理器主界面
 ├── app.js             # 核心逻辑
 ├── styles.css         # 全屏响应式样式
 ├── background.js      # 后台脚本（Native Messaging 通信）
@@ -120,7 +121,7 @@ workspace-tags/
 
 ## ⚙️ 技术栈
 
-- Chrome Extension Manifest V3（`chrome_url_overrides.newtab`）
+- Chrome Extension Manifest V3（`chrome_url_overrides.newtab` 指向空白页）
 - 原生 JavaScript（零依赖）
 - Chrome Storage API
 - CSS Grid / Flexbox 响应式布局

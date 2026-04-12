@@ -807,21 +807,62 @@ class UIController {
 
     // 目录同步映射 { tagName: dirPath }
     this.syncDirMappings = {};
+
+    // 首屏加载动画
+    this._bootLoadingMinDuration = 1000;
+    this._bootLoadingStartedAt = 0;
+
+    // 布局自适应
+    this._sidebarPreferredWidth = null;
+    this._layoutFrame = null;
+    this._textMeasureCanvas = null;
+    this._textMeasureContext = null;
   }
 
   async init() {
-    await this.tagManager.load();
-    await this.fileManager.load();
-    this.sortOrder = await StorageService.getSortOrder();
-    this.sortField = await StorageService.getSortField();
-    this.syncDirMappings = await StorageService.getSyncDirMappings();
-    this.bindEvents();
-    this.render();
-    // 异步加载已安装应用列表（不阻塞主流程）
-    this.loadInstalledApps();
-    // 根据平台更新 UI 文本
-    this._applyPlatformUI();
-    this._scheduleAdaptiveLayout();
+    this._bootLoadingStartedAt = performance.now();
+    document.body.classList.add('app-booting');
+
+    try {
+      await this.tagManager.load();
+      await this.fileManager.load();
+      this.sortOrder = await StorageService.getSortOrder();
+      this.sortField = await StorageService.getSortField();
+      this.syncDirMappings = await StorageService.getSyncDirMappings();
+      this.bindEvents();
+      this.render();
+      // 异步加载已安装应用列表（不阻塞主流程）
+      this.loadInstalledApps();
+      // 根据平台更新 UI 文本
+      this._applyPlatformUI();
+      this._scheduleAdaptiveLayout();
+    } catch (err) {
+      console.error('应用初始化失败:', err);
+      this.showToast('初始化失败，请刷新页面后重试', 'error');
+    } finally {
+      await this._finishBootLoading();
+    }
+  }
+
+  async _finishBootLoading() {
+    const overlay = document.getElementById('boot-loading');
+    const elapsed = performance.now() - this._bootLoadingStartedAt;
+    const remaining = Math.max(0, this._bootLoadingMinDuration - elapsed);
+
+    if (remaining > 0) {
+      await new Promise((resolve) => setTimeout(resolve, remaining));
+    }
+
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+    document.body.classList.remove('app-booting');
+    if (!overlay) return;
+
+    overlay.classList.add('is-hidden');
+    overlay.setAttribute('aria-busy', 'false');
+    setTimeout(() => {
+      overlay.style.display = 'none';
+    }, 260);
   }
 
   /**

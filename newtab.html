@@ -7,6 +7,23 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div id="boot-loading" class="boot-loading" aria-live="polite" aria-busy="true">
+    <div class="boot-loading-card">
+      <div class="boot-loading-spinner" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+      <div class="boot-loading-text">
+        <h2>正在加载工作区</h2>
+        <p>文件较多时会稍久一点，首次进入至少展示 1 秒。</p>
+      </div>
+      <div class="boot-loading-bar" aria-hidden="true">
+        <div class="boot-loading-bar-inner"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="app">
     <!-- 左侧边栏 -->
     <aside class="sidebar">

@@ -15,7 +15,7 @@
     "service_worker": "background.js"
   },
   "chrome_url_overrides": {
-    "newtab": "newtab.html"
+    "newtab": "blank.html"
   },
   "icons": {
     "16": "icons/icon16.png",

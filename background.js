@@ -1,4 +1,4 @@
-// 点击扩展图标时，打开新标签页（即插件主界面）
+// 点击扩展图标时，打开文件标签管理器主界面
 chrome.action.onClicked.addListener(() => {
   chrome.tabs.create({ url: 'newtab.html' });
 });
