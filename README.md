@@ -29,7 +29,7 @@
 
 如果需要通过**手动输入路径**来导入目录文件（而不是通过文件选择器），需要安装 Native Messaging Host：
 
-1. 确保已安装 **Python 3**
+1. 确保已安装 **Python 3.8+**
 2. 在 `chrome://extensions/` 页面找到 **Workspace Tags** 扩展的 **ID**（一串字母数字字符串）
 3. 运行安装脚本：
 
@@ -50,9 +50,36 @@
    > - 生成 Native Messaging Host 的 JSON manifest 文件到 `%LOCALAPPDATA%\Google\Chrome\User Data\NativeMessagingHosts\`
    > - 写入注册表 `HKCU\SOFTWARE\Google\Chrome\NativeMessagingHosts\`
 
-4. 重新加载 Chrome 扩展
+4. 安装完成后建议先执行自检：
+
+   **macOS / Linux：**
+   ```bash
+   cd workspace-tags/native-host
+   bash check.sh
+   ```
+
+   **Windows：**
+   ```cmd
+   cd workspace-tags\native-host
+   check.bat
+   ```
+
+   如果你想直接走命令行，也可以执行：`python3 read_dir.py --self-check`（Windows 用 `python`）。
+
+5. 重新加载 Chrome 扩展
 
 > **注意**：支持 macOS、Windows 和 Linux。Native Host 用于让扩展能够读取指定路径下的文件列表、打开文件、在终端中打开目录、重命名文件等。
+>
+> **调试日志**：如需查看 Host 详细执行日志，可临时设置环境变量 `WORKSPACE_TAGS_HOST_DEBUG=1` 后再运行 Chrome / 安装流程。
+
+### 🩺 Native Host 排障
+
+- **先跑自检**：`python3 native-host/read_dir.py --self-check`（Windows 用 `python`）
+- **看是否已注册**：自检里会检查 Chrome Native Host manifest 是否存在、是否指向当前仓库里的 `read_dir.py` / `run_host.bat`
+- **Linux 无法弹系统选择框**：通常是缺少 `zenity`
+- **macOS 无法弹系统选择框**：优先检查 `osascript` 是否可用，再尝试手动输入路径模式
+- **Windows 无法弹选择框**：通常与 `tkinter` 不可用或 Python 安装不完整有关
+- **扩展提示 Native Host 未安装**：重新执行 `install.sh` / `install.bat` 后，再刷新扩展页面
 
 ## 🚀 使用指南
 
@@ -79,9 +106,14 @@ workspace-tags/
 ├── styles.css         # 全屏响应式样式
 ├── background.js      # 后台脚本（Native Messaging 通信）
 ├── native-host/       # Native Messaging Host（本地文件读取）
-│   ├── read_dir.py    # Python 脚本，读取目录内容
+│   ├── read_dir.py    # Host 入口脚本
+│   ├── host_common.py # Native Messaging 协议、日志与参数校验
+│   ├── host_self_check.py # 自检与环境检查
+│   ├── run_host.sh    # 启动包装器 - macOS/Linux（固定 Python 路径）
 │   ├── install.sh     # 安装脚本 - macOS/Linux（注册 Native Host）
-│   └── install.bat    # 安装脚本 - Windows（注册 Native Host）
+│   ├── install.bat    # 安装脚本 - Windows（注册 Native Host）
+│   ├── check.sh       # 自检脚本 - macOS/Linux
+│   └── check.bat      # 自检脚本 - Windows
 ├── icons/             # 插件图标
 └── README.md
 ```

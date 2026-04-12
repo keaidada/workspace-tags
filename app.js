@@ -821,6 +821,7 @@ class UIController {
     this.loadInstalledApps();
     // 根据平台更新 UI 文本
     this._applyPlatformUI();
+    this._scheduleAdaptiveLayout();
   }
 
   /**
@@ -1511,6 +1512,7 @@ class UIController {
 
     // --- 侧边栏拖拽分割线 ---
     this._initSidebarResizer();
+    window.addEventListener('resize', () => this._scheduleAdaptiveLayout());
 
     // --- 标签模式切换 ---
     document.querySelectorAll('.tag-mode-tab').forEach((tab) => {
@@ -1562,6 +1564,123 @@ class UIController {
     const startIdx = (safePage - 1) * this.pageSize;
     const endIdx = Math.min(startIdx + this.pageSize, totalFiles);
     return allFilteredFiles.slice(startIdx, endIdx);
+  }
+
+  _clampSidebarWidth(width) {
+    return Math.min(Math.max(Math.round(width), 200), 500);
+  }
+
+  _measureTextWidth(text, sampleEl) {
+    if (!text) return 0;
+    if (!this._textMeasureCanvas) {
+      this._textMeasureCanvas = document.createElement('canvas');
+      this._textMeasureContext = this._textMeasureCanvas.getContext('2d');
+    }
+    const ctx = this._textMeasureContext;
+    if (!ctx) return text.length * 14;
+
+    const computed = sampleEl ? window.getComputedStyle(sampleEl) : null;
+    const font = computed
+      ? `${computed.fontStyle} ${computed.fontWeight} ${computed.fontSize} ${computed.fontFamily}`
+      : '600 14px sans-serif';
+    ctx.font = font;
+    return ctx.measureText(text).width;
+  }
+
+  _getSidebarRowWidth(item) {
+    if (!item) return 0;
+
+    const textEl = item.querySelector('.tag-nav-text');
+    const rowEl = item.closest('.tag-tree-item');
+    const itemStyle = window.getComputedStyle(item);
+    const rowStyle = rowEl ? window.getComputedStyle(rowEl) : null;
+    const paddingLeft = parseFloat(itemStyle.paddingLeft || '0');
+    const paddingRight = parseFloat(itemStyle.paddingRight || '0');
+    const indentWidth = parseFloat(rowStyle?.paddingLeft || '0');
+    const gap = parseFloat(itemStyle.columnGap || itemStyle.gap || '0');
+
+    const visibleChildren = [...item.children].filter((child) => {
+      const style = window.getComputedStyle(child);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    });
+
+    const extraWidth = visibleChildren.reduce((sum, child) => {
+      if (child === textEl) return sum;
+      return sum + child.getBoundingClientRect().width;
+    }, 0);
+
+    const textWidth = this._measureTextWidth(textEl?.textContent?.trim() || '', textEl);
+    const gapWidth = Math.max(visibleChildren.length - 1, 0) * gap;
+    return indentWidth + paddingLeft + paddingRight + extraWidth + textWidth + gapWidth;
+  }
+
+  _getSidebarContentWidth() {
+    const navItems = [...document.querySelectorAll('.tag-nav-item')];
+    if (!navItems.length) return 200;
+
+    const widestRow = navItems.reduce(
+      (max, item) => Math.max(max, this._getSidebarRowWidth(item)),
+      0,
+    );
+
+    return this._clampSidebarWidth(widestRow + 28);
+  }
+
+  _getAdaptiveSidebarBaseWidth() {
+    const viewportDrivenWidth = this._clampSidebarWidth(window.innerWidth * 0.26);
+    const contentDrivenWidth = this._getSidebarContentWidth();
+    return Math.max(viewportDrivenWidth, contentDrivenWidth);
+  }
+
+  _getDesiredFileNameWidth() {
+    const pageFiles = this._getCurrentPageFiles();
+    const sampleNameEl = document.querySelector('.file-name');
+    const longestNameWidth = pageFiles.reduce(
+      (max, file) => Math.max(max, this._measureTextWidth(file?.name || '', sampleNameEl)),
+      0,
+    );
+
+    const minWidth = 220;
+    const maxWidth = Math.max(320, Math.min(720, Math.floor(window.innerWidth * 0.46)));
+    if (longestNameWidth <= 0) return minWidth;
+    return Math.min(Math.max(Math.ceil(longestNameWidth * 2 / 3), minWidth), maxWidth);
+  }
+
+  _applyAdaptiveLayout() {
+    const sidebar = document.querySelector('.sidebar');
+    const fileNameEl = document.querySelector('.file-name');
+    if (!sidebar) return;
+
+    const desiredFileNameWidth = this._getDesiredFileNameWidth();
+    document.documentElement.style.setProperty('--file-name-max-width', `${desiredFileNameWidth}px`);
+
+    const contentDrivenWidth = this._getSidebarContentWidth();
+    const baseSidebarWidth = this._clampSidebarWidth(
+      Math.max(this._sidebarPreferredWidth ?? this._getAdaptiveSidebarBaseWidth(), contentDrivenWidth),
+    );
+
+    let targetSidebarWidth = baseSidebarWidth;
+    if (fileNameEl) {
+      const currentNameWidth = Math.ceil(fileNameEl.getBoundingClientRect().width);
+      const extraNeeded = Math.max(0, desiredFileNameWidth - currentNameWidth);
+      targetSidebarWidth = Math.max(
+        contentDrivenWidth,
+        this._clampSidebarWidth(baseSidebarWidth - extraNeeded),
+      );
+    }
+
+    sidebar.style.width = `${targetSidebarWidth}px`;
+    document.documentElement.style.setProperty('--sidebar-width', `${targetSidebarWidth}px`);
+  }
+
+  _scheduleAdaptiveLayout() {
+    if (this._layoutFrame) {
+      cancelAnimationFrame(this._layoutFrame);
+    }
+    this._layoutFrame = requestAnimationFrame(() => {
+      this._layoutFrame = null;
+      this._applyAdaptiveLayout();
+    });
   }
 
   _updateFileCardSelection(card, checked) {
@@ -1908,8 +2027,10 @@ class UIController {
     document.addEventListener('mousemove', (e) => {
       if (!isResizing) return;
       const diff = e.clientX - startX;
-      const newWidth = Math.min(Math.max(startWidth + diff, 200), 500);
-      sidebar.style.width = newWidth + 'px';
+      const newWidth = this._clampSidebarWidth(startWidth + diff);
+      this._sidebarPreferredWidth = newWidth;
+      sidebar.style.width = `${newWidth}px`;
+      document.documentElement.style.setProperty('--sidebar-width', `${newWidth}px`);
     });
 
     document.addEventListener('mouseup', () => {
@@ -1918,6 +2039,7 @@ class UIController {
       resizer.classList.remove('active');
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      this._scheduleAdaptiveLayout();
     });
   }
 
@@ -4347,6 +4469,8 @@ class UIController {
         this.renderSidebar();
       });
     });
+
+    this._scheduleAdaptiveLayout();
   }
 
   renderFileList() {
@@ -4371,6 +4495,7 @@ class UIController {
       `;
       this.renderBatchBar(0, 0);
       this.renderPagination(0, 0);
+      this._scheduleAdaptiveLayout();
       return;
     }
 
@@ -4386,6 +4511,7 @@ class UIController {
       `;
       this.renderBatchBar(0, 0);
       this.renderPagination(0, 0);
+      this._scheduleAdaptiveLayout();
       return;
     }
 
@@ -4421,6 +4547,7 @@ class UIController {
 
     // 异步加载文件详细信息（大小、创建时间等）
     this.loadFileInfoForVisibleCards();
+    this._scheduleAdaptiveLayout();
   }
 
   // ==========================================

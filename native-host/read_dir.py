@@ -4,12 +4,32 @@ Workspace Tags - Native Messaging Host
 用于读取本地目录下的文件列表，通过 Chrome Native Messaging 协议与扩展通信。
 """
 
-import json
+import argparse
 import os
 import shutil
-import struct
 import sys
 import time
+
+from host_common import (
+    HOST_NAME,
+    HOST_VERSION,
+    MAX_BATCH_PATHS,
+    MAX_FILE_MOVES,
+    MAX_TAG_PATHS,
+    ValidationError,
+    _normalize_action_result,
+    _optional_bool,
+    _optional_non_negative_int,
+    _optional_string,
+    _require_list,
+    _require_string,
+    _require_string_list,
+    error_response,
+    log_stderr,
+    read_message,
+    send_message,
+)
+from host_self_check import build_self_check_report, print_self_check_report
 
 
 SKIP_DIRS = {
@@ -24,39 +44,6 @@ SKIP_DIRS = {
 SCAN_CACHE_TTL_SECONDS = 30
 SCAN_CACHE_MAX_ENTRIES = 4
 _SCAN_CACHE = {}
-
-
-def read_message():
-    """从 stdin 读取 Chrome Native Messaging 格式的消息"""
-    raw_length = sys.stdin.buffer.read(4)
-    if len(raw_length) == 0:
-        sys.exit(0)
-    message_length = struct.unpack('=I', raw_length)[0]
-    if message_length > 10 * 1024 * 1024:  # 10MB 上限，防止恶意超大消息导致 OOM
-        sys.stderr.write(f"Message too large: {message_length} bytes\n")
-        sys.exit(1)
-    message = sys.stdin.buffer.read(message_length).decode('utf-8')
-    return json.loads(message)
-
-
-def send_message(message):
-    """向 stdout 写入 Chrome Native Messaging 格式的消息"""
-    encoded = json.dumps(message, ensure_ascii=False).encode('utf-8')
-    # Chrome Native Messaging 限制单条消息最大 1MB
-    if len(encoded) > 1024 * 1024:
-        sys.stderr.write(f"[WARN] Message too large ({len(encoded)} bytes), truncating\n")
-        sys.stderr.flush()
-        # 返回错误消息而不是发送超大消息导致崩溃
-        error_msg = json.dumps({
-            "error": f"响应数据过大 ({len(encoded)} 字节)，请尝试选择更小的目录或子目录"
-        }, ensure_ascii=False).encode('utf-8')
-        sys.stdout.buffer.write(struct.pack('=I', len(error_msg)))
-        sys.stdout.buffer.write(error_msg)
-        sys.stdout.buffer.flush()
-        return
-    sys.stdout.buffer.write(struct.pack('=I', len(encoded)))
-    sys.stdout.buffer.write(encoded)
-    sys.stdout.buffer.flush()
 
 
 def _normalize_dir_path(dir_path):
@@ -1319,94 +1306,280 @@ def create_dir_structure(base_path, tag_paths, file_moves=None, keep_source=Fals
     }
 
 
-def main():
+def _validate_file_moves(value):
+    if value is None:
+        return None
+
+    items = _require_list(value, 'fileMoves', max_items=MAX_FILE_MOVES)
+    validated = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValidationError(f'参数 fileMoves[{idx}] 必须是对象')
+        validated.append({
+            'src': _require_string(item.get('src'), f'fileMoves[{idx}].src'),
+            'destDir': _require_string(item.get('destDir'), f'fileMoves[{idx}].destDir'),
+        })
+    return validated
+
+
+def validate_list_dir(message):
+    return {
+        'path': _require_string(message.get('path'), 'path'),
+    }
+
+
+
+def validate_list_dir_paged(message):
+    return {
+        'path': _require_string(message.get('path'), 'path'),
+        'page': _optional_non_negative_int(message.get('page'), 'page', default=0),
+        'createIfNotExists': _optional_bool(message.get('createIfNotExists'), 'createIfNotExists', default=False),
+    }
+
+
+
+def validate_empty(_message):
+    return {}
+
+
+
+def validate_open_file(message):
+    return {
+        'path': _require_string(message.get('path'), 'path'),
+        'app': _optional_string(message.get('app'), 'app', default=''),
+    }
+
+
+
+def validate_read_file(message):
+    return {
+        'path': _require_string(message.get('path'), 'path'),
+    }
+
+
+
+def validate_reveal(message):
+    return {
+        'path': _require_string(message.get('path'), 'path'),
+    }
+
+
+
+def validate_open_terminal(message):
+    return {
+        'path': _require_string(message.get('path'), 'path'),
+        'app': _optional_string(message.get('app'), 'app', default=''),
+    }
+
+
+
+def validate_get_file_info(message):
+    return {
+        'path': _require_string(message.get('path'), 'path'),
+    }
+
+
+
+def validate_batch_get_file_info(message):
+    return {
+        'paths': _require_string_list(message.get('paths', []), 'paths', max_items=MAX_BATCH_PATHS),
+    }
+
+
+
+def validate_rename_file(message):
+    return {
+        'oldPath': _require_string(message.get('oldPath'), 'oldPath'),
+        'newName': _require_string(message.get('newName'), 'newName'),
+    }
+
+
+
+def validate_create_dir_structure(message):
+    return {
+        'basePath': _require_string(message.get('basePath'), 'basePath'),
+        'tagPaths': _require_string_list(message.get('tagPaths', []), 'tagPaths', max_items=MAX_TAG_PATHS),
+        'fileMoves': _validate_file_moves(message.get('fileMoves')),
+        'keepSource': _optional_bool(message.get('keepSource'), 'keepSource', default=False),
+    }
+
+
+
+def handle_list_dir(payload):
+    return list_directory(payload['path'])
+
+
+
+def handle_list_dir_paged(payload):
+    return list_directory_paged(
+        payload['path'],
+        page=payload['page'],
+        create_if_not_exists=payload['createIfNotExists'],
+    )
+
+
+
+def handle_choose_directory(_payload):
+    return choose_directory()
+
+
+
+def handle_choose_and_list_directory(_payload):
+    return choose_and_list_directory()
+
+
+
+def handle_choose_files(_payload):
+    return choose_files()
+
+
+
+def handle_open_file(payload):
+    if payload['app']:
+        return open_file_with(payload['path'], payload['app'])
+    return open_file(payload['path'])
+
+
+
+def handle_read_file(payload):
+    return read_text_file(payload['path'])
+
+
+
+def handle_reveal(payload):
+    return reveal_in_finder(payload['path'])
+
+
+
+def handle_ping(_payload):
+    return {
+        'status': 'ok',
+        'version': HOST_VERSION,
+        'host': HOST_NAME,
+    }
+
+
+
+def handle_list_apps(_payload):
+    return list_installed_apps()
+
+
+
+def handle_open_terminal(payload):
+    return open_terminal_at(payload['path'], payload['app'])
+
+
+
+def handle_get_file_info(payload):
+    return get_file_info(payload['path'])
+
+
+
+def handle_batch_get_file_info(payload):
+    return batch_get_file_info(payload['paths'])
+
+
+
+def handle_rename_file(payload):
+    return rename_file(payload['oldPath'], payload['newName'])
+
+
+
+def handle_create_dir_structure(payload):
+    return create_dir_structure(
+        payload['basePath'],
+        payload['tagPaths'],
+        payload['fileMoves'],
+        payload['keepSource'],
+    )
+
+
+ACTION_REGISTRY = {
+    'listDir': (validate_list_dir, handle_list_dir),
+    'listDirPaged': (validate_list_dir_paged, handle_list_dir_paged),
+    'chooseDirectory': (validate_empty, handle_choose_directory),
+    'chooseAndListDir': (validate_empty, handle_choose_and_list_directory),
+    'chooseFiles': (validate_empty, handle_choose_files),
+    'openFile': (validate_open_file, handle_open_file),
+    'readFile': (validate_read_file, handle_read_file),
+    'revealInFinder': (validate_reveal, handle_reveal),
+    'ping': (validate_empty, handle_ping),
+    'listApps': (validate_empty, handle_list_apps),
+    'openTerminal': (validate_open_terminal, handle_open_terminal),
+    'getFileInfo': (validate_get_file_info, handle_get_file_info),
+    'batchGetFileInfo': (validate_batch_get_file_info, handle_batch_get_file_info),
+    'renameFile': (validate_rename_file, handle_rename_file),
+    'createDirStructure': (validate_create_dir_structure, handle_create_dir_structure),
+}
+
+
+
+
+def run_host_loop():
     while True:
         try:
             message = read_message()
-        except Exception:
+        except SystemExit:
+            raise
+        except Exception as exc:
+            log_stderr(f'Failed to read native message: {exc}', 'ERROR', always=True)
             break
 
-        action = message.get('action', '')
+        action = message.get('action')
+        if not isinstance(action, str) or not action:
+            send_message(error_response('缺少有效的 action 参数', code='INVALID_ACTION'))
+            continue
+
+        action_entry = ACTION_REGISTRY.get(action)
+        if action_entry is None:
+            send_message(error_response(f'未知操作: {action}', code='UNKNOWN_ACTION', action=action))
+            continue
+
+        validator, handler = action_entry
+        started_at = time.perf_counter()
 
         try:
-            if action == 'listDir':
-                dir_path = message.get('path', '')
-                result = list_directory(dir_path)
-                send_message(result)
-            elif action == 'listDirPaged':
-                dir_path = message.get('path', '')
-                page = message.get('page', 0)
-                create_if_not_exists = message.get('createIfNotExists', False)
-                result = list_directory_paged(dir_path, page=page, create_if_not_exists=create_if_not_exists)
-                send_message(result)
-            elif action == 'chooseDirectory':
-                # 弹出系统原生目录选择对话框
-                result = choose_directory()
-                send_message(result)
-            elif action == 'chooseAndListDir':
-                # 弹出目录选择 + 列出文件
-                result = choose_and_list_directory()
-                send_message(result)
-            elif action == 'chooseFiles':
-                # 弹出文件选择对话框（支持多选），返回文件的绝对路径列表
-                result = choose_files()
-                send_message(result)
-            elif action == 'openFile':
-                file_path = message.get('path', '')
-                app = message.get('app', '')
-                if app:
-                    result = open_file_with(file_path, app)
-                else:
-                    result = open_file(file_path)
-                send_message(result)
-            elif action == 'readFile':
-                file_path = message.get('path', '')
-                result = read_text_file(file_path)
-                send_message(result)
-            elif action == 'revealInFinder':
-                file_path = message.get('path', '')
-                result = reveal_in_finder(file_path)
-                send_message(result)
-            elif action == 'ping':
-                send_message({"status": "ok", "version": "1.0.0"})
-            elif action == 'listApps':
-                result = list_installed_apps()
-                send_message(result)
-            elif action == 'openTerminal':
-                dir_path = message.get('path', '')
-                app = message.get('app', '')
-                result = open_terminal_at(dir_path, app)
-                send_message(result)
-            elif action == 'getFileInfo':
-                file_path = message.get('path', '')
-                result = get_file_info(file_path)
-                send_message(result)
-            elif action == 'batchGetFileInfo':
-                paths = message.get('paths', [])
-                result = batch_get_file_info(paths)
-                send_message(result)
-            elif action == 'renameFile':
-                old_path = message.get('oldPath', '')
-                new_name = message.get('newName', '')
-                result = rename_file(old_path, new_name)
-                send_message(result)
-            elif action == 'createDirStructure':
-                base_path = message.get('basePath', '')
-                tag_paths = message.get('tagPaths', [])
-                file_moves = message.get('fileMoves', None)
-                keep_source = message.get('keepSource', False)
-                result = create_dir_structure(base_path, tag_paths, file_moves, keep_source)
-                send_message(result)
-            else:
-                send_message({"error": f"未知操作: {action}"})
-        except Exception as e:
-            sys.stderr.write(f"[NativeHost] Unhandled error in action '{action}': {e}\n")
-            sys.stderr.flush()
-            try:
-                send_message({"error": f"内部错误 ({action}): {str(e)}"})
-            except Exception:
-                pass
+            payload = validator(message)
+            result = _normalize_action_result(action, handler(payload))
+        except ValidationError as exc:
+            result = error_response(str(exc), code=exc.code, action=action)
+        except Exception as exc:
+            log_stderr(f"Unhandled error in action '{action}': {exc}", 'ERROR', always=True)
+            result = error_response(f'内部错误 ({action}): {str(exc)}', code='INTERNAL_ERROR', action=action)
+
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        if result.get('error'):
+            log_stderr(f"Action {action} failed in {duration_ms}ms: {result.get('error')}", 'ERROR', always=True)
+        else:
+            log_stderr(f'Action {action} completed in {duration_ms}ms', 'DEBUG')
+
+        try:
+            send_message(result)
+        except Exception as exc:
+            log_stderr(f"Failed to send response for action '{action}': {exc}", 'ERROR', always=True)
+            break
+
+    return 0
+
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Workspace Tags Native Messaging Host')
+    parser.add_argument('--self-check', action='store_true', help='检查当前 Host 依赖、注册状态和关键环境')
+    parser.add_argument('--version', action='store_true', help='输出 Host 版本并退出')
+    args = parser.parse_args(argv)
+
+    if args.version:
+        print(HOST_VERSION)
+        return 0
+
+    if args.self_check:
+        report = build_self_check_report(HOST_NAME, HOST_VERSION, __file__)
+        print_self_check_report(report)
+        return 0 if report['ok'] else 1
+
+    return run_host_loop()
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

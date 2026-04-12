@@ -30,6 +30,9 @@
   --radius-xl: 16px;
   --transition: 150ms ease;
   --sidebar-width: 300px;
+  --sidebar-min-width: 200px;
+  --sidebar-max-width: 500px;
+  --file-name-max-width: 420px;
   --card-bg: #ffffff;
 }
 
@@ -64,14 +67,15 @@ html, body {
    ========================================== */
 .sidebar {
   width: var(--sidebar-width);
-  min-width: 200px;
-  max-width: 500px;
+  min-width: var(--sidebar-min-width);
+  max-width: var(--sidebar-max-width);
   height: 100vh;
   background: var(--bg);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  flex: 0 0 auto;
 }
 
 /* 可拖拽分割线 */
@@ -1135,6 +1139,8 @@ html, body {
 }
 
 .file-name {
+  display: block;
+  max-width: min(100%, var(--file-name-max-width));
   font-size: 14px;
   font-weight: 600;
   color: var(--text);

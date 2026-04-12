@@ -40,7 +40,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     case 'listDir':
       return relayNativeMessage(sendResponse, { action: 'listDir', path: request.path }, {
         onError: (lastError) => ({
-          error: 'Native Host 未安装或连接失败。请运行 native-host/install.sh (macOS/Linux) 或 install.bat (Windows) 安装。\n' +
+          error: 'Native Host 未安装或连接失败。请先运行 native-host/install.sh (macOS/Linux) 或 install.bat (Windows) 安装；如果仍失败，再执行 native-host/check.sh 或 check.bat 自检。\n' +
             '错误详情: ' + lastError.message,
         }),
       });
