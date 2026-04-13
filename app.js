@@ -1565,6 +1565,11 @@ class UIController {
       });
     });
 
+    // --- 知识图谱 ---
+    document.getElementById('btn-graph')?.addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('graph.html') });
+    });
+
     // --- 清理失效文件 & 回收站 ---
     document.getElementById('btn-cleanup-files')?.addEventListener('click', () => this.showCleanupModal());
     document.getElementById('btn-open-trash')?.addEventListener('click', () => this.showTrashModal());

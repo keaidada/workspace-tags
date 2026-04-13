@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>知识图谱 - 标签管理器</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f1117;
+      color: #e0e0e0;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    .graph-toolbar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 48px;
+      background: rgba(15, 17, 23, 0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+      z-index: 100;
+    }
+    .graph-toolbar .back-btn {
+      background: none;
+      border: 1px solid rgba(255,255,255,0.15);
+      color: #e0e0e0;
+      border-radius: 6px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .graph-toolbar .back-btn:hover { background: rgba(255,255,255,0.08); }
+    .graph-toolbar h1 { font-size: 15px; font-weight: 600; color: #fff; flex-shrink: 0; }
+    .graph-toolbar .search-box { flex: 1; max-width: 320px; position: relative; }
+    .graph-toolbar .search-box input {
+      width: 100%;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
+      padding: 6px 12px 6px 32px;
+      color: #e0e0e0;
+      font-size: 13px;
+      outline: none;
+    }
+    .graph-toolbar .search-box input:focus { border-color: rgba(99, 155, 255, 0.5); }
+    .graph-toolbar .search-box input::placeholder { color: rgba(255,255,255,0.3); }
+    .graph-toolbar .search-box svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); opacity: 0.4; }
+    .graph-toolbar .mode-toggle {
+      background: none;
+      border: 1px solid rgba(255,255,255,0.15);
+      color: #e0e0e0;
+      border-radius: 6px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .graph-toolbar .mode-toggle:hover { background: rgba(255,255,255,0.08); }
+    .graph-toolbar .mode-toggle.active { background: rgba(99,155,255,0.2); border-color: rgba(99,155,255,0.4); color: #9bc0ff; }
+    .graph-stats { font-size: 12px; color: rgba(255,255,255,0.4); margin-left: auto; flex-shrink: 0; }
+
+    .level-bar {
+      display: flex; gap: 2px; flex-shrink: 0;
+      background: rgba(255,255,255,0.04); border-radius: 6px; padding: 2px;
+    }
+    .level-btn {
+      background: none; border: none; color: rgba(255,255,255,0.4);
+      font-size: 11px; padding: 3px 7px; border-radius: 4px; cursor: pointer;
+      white-space: nowrap;
+    }
+    .level-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7); }
+    .level-btn.active { background: rgba(99,155,255,0.25); color: #9bc0ff; }
+
+    #cy { position: fixed; top: 48px; left: 0; right: 0; bottom: 0; }
+
+    .info-panel {
+      position: fixed; bottom: 16px; right: 16px; width: 300px; max-height: 360px;
+      background: rgba(22, 25, 35, 0.95); backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 10px;
+      padding: 16px; z-index: 50; display: none; overflow-y: auto;
+    }
+    .info-panel.visible { display: block; }
+    .info-panel .info-type { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255,255,255,0.4); margin-bottom: 6px; }
+    .info-panel .info-name { font-size: 15px; font-weight: 600; color: #fff; word-break: break-all; margin-bottom: 8px; }
+    .info-panel .info-path { font-size: 12px; color: rgba(255,255,255,0.5); word-break: break-all; margin-bottom: 10px; font-family: 'SF Mono', 'Menlo', monospace; }
+    .info-panel .info-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+    .info-panel .info-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(99, 155, 255, 0.15); color: rgba(150, 190, 255, 0.9); }
+    .info-panel .info-count { font-size: 13px; color: rgba(255,255,255,0.6); margin-bottom: 8px; }
+    .info-panel .info-children { font-size: 12px; color: rgba(255,255,255,0.4); margin-top: 6px; }
+    .info-panel .info-children span { display: inline-block; background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; margin: 2px 2px 2px 0; }
+
+    .graph-legend {
+      position: fixed; bottom: 16px; left: 16px;
+      background: rgba(22, 25, 35, 0.9); border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px; padding: 10px 14px; font-size: 12px; z-index: 50;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .graph-legend .legend-item { display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.5); }
+    .graph-legend .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+    .range-panel { display: none; }
+
+    .ctx-menu {
+      position: fixed;
+      background: rgba(22, 25, 35, 0.97); backdrop-filter: blur(16px);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 10px;
+      padding: 8px 0; z-index: 200; display: none; min-width: 200px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .ctx-menu.visible { display: block; }
+    .ctx-menu-title {
+      padding: 6px 14px; font-size: 12px; font-weight: 600; color: #fff;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px;
+    }
+    .ctx-menu-divider { height: 1px; background: rgba(255,255,255,0.08); margin: 4px 0; }
+    .ctx-menu-section { display: flex; align-items: center; gap: 6px; padding: 4px 14px; }
+    .ctx-menu-label { font-size: 11px; color: rgba(255,255,255,0.4); width: 28px; flex-shrink: 0; }
+    .ctx-menu-btns { display: flex; gap: 2px; }
+    .range-btn {
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.4); font-size: 11px; padding: 2px 6px;
+      border-radius: 4px; cursor: pointer;
+    }
+    .range-btn:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7); }
+    .range-btn.active { background: rgba(99,155,255,0.25); border-color: rgba(99,155,255,0.4); color: #9bc0ff; }
+    .ctx-menu-check {
+      display: flex; align-items: center; gap: 6px; padding: 4px 14px;
+      font-size: 11px; color: rgba(255,255,255,0.5); cursor: pointer;
+    }
+    .ctx-menu-check input { accent-color: #639bff; }
+    .ctx-menu-item {
+      display: block; width: 100%; text-align: left; background: none; border: none;
+      padding: 6px 14px; font-size: 12px; color: #e0e0e0; cursor: pointer;
+    }
+    .ctx-menu-item:hover { background: rgba(99,155,255,0.15); }
+
+    .graph-loading {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #0f1117; z-index: 200; flex-direction: column; gap: 12px;
+    }
+    .graph-loading.hidden { display: none; }
+    .graph-loading .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid rgba(255,255,255,0.1);
+      border-top-color: rgba(99, 155, 255, 0.7);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    .graph-loading p { color: rgba(255,255,255,0.4); font-size: 13px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <div class="graph-loading" id="graph-loading">
+    <div class="spinner"></div>
+    <p>正在构建知识图谱...</p>
+  </div>
+
+  <div class="graph-toolbar">
+    <button class="back-btn" id="btn-back">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      返回
+    </button>
+    <h1>知识图谱</h1>
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      <input type="text" id="search-input" placeholder="搜索标签或文件..." />
+    </div>
+    <button class="mode-toggle" id="btn-show-files" title="返回首页">返回首页</button>
+    <button class="mode-toggle" id="btn-fit" title="适应屏幕，显示所有节点">适应屏幕</button>
+    <div class="level-bar" id="level-bar">
+      <button class="level-btn" data-level="0">全部</button>
+      <button class="level-btn active" data-level="1">1级</button>
+      <button class="level-btn" data-level="2">2级</button>
+      <button class="level-btn" data-level="3">3级</button>
+      <button class="level-btn" data-level="4">4级</button>
+      <button class="level-btn" data-level="5">5级</button>
+      <button class="level-btn" data-level="6">6级</button>
+      <button class="level-btn" data-level="7">7级</button>
+      <button class="level-btn" data-level="8">8级</button>
+      <button class="level-btn" data-level="9">9级</button>
+      <button class="level-btn" data-level="10">10级</button>
+    </div>
+    <span class="graph-stats" id="graph-stats"></span>
+  </div>
+
+  <div id="cy"></div>
+  <div class="info-panel" id="info-panel"></div>
+
+  <!-- 右键菜单（标签节点） -->
+  <div class="ctx-menu" id="graph-ctx-menu">
+    <div class="ctx-menu-title" id="ctx-menu-title">标签名</div>
+    <div class="ctx-menu-divider"></div>
+    <div class="ctx-menu-section">
+      <span class="ctx-menu-label">上级</span>
+      <div class="ctx-menu-btns" id="range-up">
+        <button class="range-btn active" data-val="0">0</button>
+        <button class="range-btn" data-val="1">1</button>
+        <button class="range-btn" data-val="2">2</button>
+        <button class="range-btn" data-val="3">3</button>
+        <button class="range-btn" data-val="5">5</button>
+        <button class="range-btn" data-val="99">全</button>
+      </div>
+    </div>
+    <div class="ctx-menu-section">
+      <span class="ctx-menu-label">下级</span>
+      <div class="ctx-menu-btns" id="range-down">
+        <button class="range-btn" data-val="0">0</button>
+        <button class="range-btn active" data-val="1">1</button>
+        <button class="range-btn" data-val="2">2</button>
+        <button class="range-btn" data-val="3">3</button>
+        <button class="range-btn" data-val="5">5</button>
+        <button class="range-btn" data-val="99">全</button>
+      </div>
+    </div>
+    <div class="ctx-menu-divider"></div>
+    <label class="ctx-menu-check">
+      <input type="checkbox" id="range-show-files" checked /> 显示文件
+    </label>
+    <div class="ctx-menu-divider"></div>
+    <button class="ctx-menu-item" id="ctx-expand">展开此标签</button>
+    <div class="ctx-menu-divider"></div>
+    <div class="ctx-menu-section">
+      <span class="ctx-menu-label">布局</span>
+      <div class="ctx-menu-btns" id="ctx-layout">
+        <button class="range-btn" data-layout="circle">环形</button>
+        <button class="range-btn active" data-layout="concentric">层级</button>
+        <button class="range-btn" data-layout="cose">力导向</button>
+        <button class="range-btn" data-layout="grid">网格</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="graph-legend">
+    <div class="legend-item"><div class="legend-dot" style="background: #639bff;"></div>标签节点</div>
+    <div class="legend-item"><div class="legend-dot" style="background: #6b7280;"></div>文件节点（点击标签展开）</div>
+    <div class="legend-item"><div class="legend-dot" style="background: rgba(255,255,255,0.15); border: 1px dashed rgba(255,255,255,0.3);"></div>层级关系（父→子标签）</div>
+  </div>
+
+  <script src="lib/cytoscape.min.js"></script>
+  <script src="graph.js"></script>
+</body>
+</html>
