@@ -1567,7 +1567,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Workspace Tags Native Messaging Host')
     parser.add_argument('--self-check', action='store_true', help='检查当前 Host 依赖、注册状态和关键环境')
     parser.add_argument('--version', action='store_true', help='输出 Host 版本并退出')
-    args = parser.parse_args(argv)
+    args, _unknown = parser.parse_known_args(argv)
 
     if args.version:
         print(HOST_VERSION)
